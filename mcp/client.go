@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -543,4 +545,125 @@ func (client *Client) buildRequestBodyFromRequest(req *Request) map[string]any {
 	}
 
 	return requestBody
+}
+
+// CallWithRequestStream streams the LLM response via SSE (Server-Sent Events).
+// onChunk is called with the full accumulated text so far after each received chunk.
+// Returns the complete final text when the stream ends.
+//
+// Idle timeout: if no chunk arrives for 30 seconds the stream is cancelled automatically.
+// This prevents the scanner from blocking indefinitely on a hung or stalled connection.
+func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) (string, error) {
+	if client.APIKey == "" {
+		return "", fmt.Errorf("AI API key not set")
+	}
+	if req.Model == "" {
+		req.Model = client.Model
+	}
+	req.Stream = true
+
+	requestBody := client.buildRequestBodyFromRequest(req)
+	jsonData, err := client.hooks.marshalRequestBody(requestBody)
+	if err != nil {
+		return "", err
+	}
+
+	url := client.hooks.buildUrl()
+	httpReq, err := client.hooks.buildRequest(url, jsonData)
+	if err != nil {
+		return "", err
+	}
+
+	// Idle-timeout watchdog: cancel the request if no SSE line arrives for 30 seconds.
+	// This breaks the scanner out of an indefinitely blocking Read on a hung connection.
+	const idleTimeout = 60 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resetCh := make(chan struct{}, 1)
+	go func() {
+		t := time.NewTimer(idleTimeout)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				cancel() // idle timeout: kill the connection
+				return
+			case <-resetCh:
+				// received a line — reset the idle timer
+				if !t.Stop() {
+					select {
+					case <-t.C:
+					default:
+					}
+				}
+				t.Reset(idleTimeout)
+			}
+		}
+	}()
+
+	httpReq = httpReq.WithContext(ctx)
+	resp, err := client.httpClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("streaming request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var accumulated strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+
+	for scanner.Scan() {
+		// Ping the watchdog: we received a line, reset the idle timer.
+		select {
+		case resetCh <- struct{}{}:
+		default:
+		}
+
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		// Parse the SSE JSON chunk
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue // skip malformed chunks
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		delta := chunk.Choices[0].Delta.Content
+		if delta == "" {
+			continue
+		}
+
+		accumulated.WriteString(delta)
+		if onChunk != nil {
+			onChunk(accumulated.String())
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return accumulated.String(), fmt.Errorf("stream interrupted: %w", err)
+	}
+
+	return accumulated.String(), nil
 }

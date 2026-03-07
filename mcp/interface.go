@@ -10,7 +10,11 @@ type AIClient interface {
 	SetAPIKey(apiKey string, customURL string, customModel string)
 	SetTimeout(timeout time.Duration)
 	CallWithMessages(systemPrompt, userPrompt string) (string, error)
-	CallWithRequest(req *Request) (string, error) // Builder pattern API (supports advanced features)
+	CallWithRequest(req *Request) (string, error)
+	// CallWithRequestStream streams the LLM response via SSE.
+	// onChunk is called with the full accumulated text so far (not raw deltas).
+	// Returns the complete final text when done.
+	CallWithRequestStream(req *Request, onChunk func(string)) (string, error)
 }
 
 // clientHooks internal hook interface (for subclass to override specific steps)

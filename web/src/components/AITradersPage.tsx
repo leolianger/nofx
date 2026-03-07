@@ -16,6 +16,7 @@ import { getModelIcon } from './ModelIcons'
 import { TraderConfigModal } from './TraderConfigModal'
 import { DeepVoidBackground } from './DeepVoidBackground'
 import { ExchangeConfigModal } from './traders/ExchangeConfigModal'
+import { TelegramConfigModal } from './traders/TelegramConfigModal'
 import { PunkAvatar, getTraderAvatar } from './PunkAvatar'
 import {
   Bot,
@@ -31,6 +32,7 @@ import {
   ExternalLink,
   Copy,
   Check,
+  MessageCircle,
 } from 'lucide-react'
 import { confirmToast } from '../lib/notify'
 import { toast } from 'sonner'
@@ -148,6 +150,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   const [showEditModal, setShowEditModal] = useState(false)
   const [showModelModal, setShowModelModal] = useState(false)
   const [showExchangeModal, setShowExchangeModal] = useState(false)
+  const [showTelegramModal, setShowTelegramModal] = useState(false)
   const [editingModel, setEditingModel] = useState<string | null>(null)
   const [editingExchange, setEditingExchange] = useState<string | null>(null)
   const [editingTrader, setEditingTrader] = useState<any>(null)
@@ -850,6 +853,16 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
             </button>
 
             <button
+              onClick={() => setShowTelegramModal(true)}
+              className="px-4 py-2 rounded text-xs font-mono uppercase tracking-wider transition-all border border-sky-900/50 bg-black/20 text-sky-500 hover:text-sky-300 hover:border-sky-700 whitespace-nowrap backdrop-blur-sm"
+            >
+              <div className="flex items-center gap-2">
+                <MessageCircle className="w-3 h-3" />
+                <span>TELEGRAM_BOT</span>
+              </div>
+            </button>
+
+            <button
               onClick={() => setShowCreateModal(true)}
               disabled={configuredModels.length === 0 || configuredExchanges.length === 0}
               className="group relative px-6 py-2 rounded text-xs font-bold font-mono uppercase tracking-wider transition-all disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap overflow-hidden bg-nofx-gold text-black hover:bg-yellow-400 shadow-[0_0_20px_rgba(240,185,11,0.2)] hover:shadow-[0_0_30px_rgba(240,185,11,0.4)]"
@@ -1376,6 +1389,14 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
               setShowExchangeModal(false)
               setEditingExchange(null)
             }}
+            language={language}
+          />
+        )}
+
+        {/* Telegram Bot Modal */}
+        {showTelegramModal && (
+          <TelegramConfigModal
+            onClose={() => setShowTelegramModal(false)}
             language={language}
           />
         )}
