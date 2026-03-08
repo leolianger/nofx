@@ -208,32 +208,89 @@ check_database() {
 }
 
 # ------------------------------------------------------------------------
+# First-time Setup: Telegram Bot Token
+# ------------------------------------------------------------------------
+setup_telegram() {
+    if is_env_configured "TELEGRAM_BOT_TOKEN"; then
+        local token=$(grep "^TELEGRAM_BOT_TOKEN=" .env | cut -d'=' -f2- | tr -d '"'"'")
+        print_success "Telegram Bot Token 已配置: ${token:0:10}..."
+        return
+    fi
+
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  🤖 Telegram Bot 配置（必须）${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "  还没有 Bot Token？按以下步骤获取："
+    echo ""
+    echo "  1. 打开 Telegram，搜索 @BotFather"
+    echo "  2. 发送 /newbot"
+    echo "  3. 输入机器人名字（随意，如 MyTradingBot）"
+    echo "  4. 输入用户名（必须以 bot 结尾，如 my_trading_bot）"
+    echo "  5. BotFather 会给你一串 Token，格式如："
+    echo "     1234567890:AABBCCDDEEFFaabbccddeeff..."
+    echo ""
+    while true; do
+        read -p "  请粘贴 Bot Token: " bot_token
+        bot_token=$(echo "$bot_token" | tr -d ' ')
+        if [ -z "$bot_token" ]; then
+            print_warning "Token 不能为空，请重新输入"
+            continue
+        fi
+        if [[ ! "$bot_token" =~ ^[0-9]+:.+ ]]; then
+            print_warning "Token 格式不对（应为 数字:字母, 如 123456:ABC...）请重试"
+            continue
+        fi
+        break
+    done
+    set_env_var "TELEGRAM_BOT_TOKEN" "$bot_token"
+    print_success "Bot Token 已保存 ✅"
+    echo ""
+}
+
+# ------------------------------------------------------------------------
 # Service Management: Start
 # ------------------------------------------------------------------------
 start() {
-    print_info "正在启动 NOFX AI Trading System..."
+    echo ""
+    echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║       🚀 NOFX 个人 AI 交易机器人 启动向导            ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
+    echo ""
 
     read_env_vars
 
     if [ ! -d "data" ]; then
-        print_info "创建数据目录..."
         install -m 700 -d data
     fi
 
+    # Interactive setup for first-time users
+    setup_telegram
+
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    print_info "正在启动服务..."
+
     if [ "$1" == "--build" ]; then
-        print_info "重新构建镜像..."
         $COMPOSE_CMD up -d --build
     else
-        print_info "启动容器..."
         $COMPOSE_CMD up -d
     fi
 
-    print_success "服务已启动！"
-    print_info "Web 界面: http://localhost:${NOFX_FRONTEND_PORT}"
-    print_info "API 端点: http://localhost:${NOFX_BACKEND_PORT}"
-    print_info ""
-    print_info "查看日志: ./start.sh logs"
-    print_info "停止服务: ./start.sh stop"
+    echo ""
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║  ✅ 启动成功！接下来：                               ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo "  1. 打开 Telegram，找到你的机器人"
+    echo "  2. 发送 /start 绑定账号"
+    echo "  3. 机器人会引导你完成 AI 模型和交易所配置"
+    echo "  4. 配置完成后，直接发消息让机器人帮你交易"
+    echo ""
+    echo -e "  Web 管理界面: ${BLUE}http://localhost:${NOFX_FRONTEND_PORT}${NC}（可选）"
+    echo -e "  查看日志: ${YELLOW}./start.sh logs${NC}"
+    echo -e "  停止服务: ${YELLOW}./start.sh stop${NC}"
+    echo ""
 }
 
 # ------------------------------------------------------------------------
