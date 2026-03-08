@@ -15,6 +15,11 @@ type AIClient interface {
 	// onChunk is called with the full accumulated text so far (not raw deltas).
 	// Returns the complete final text when done.
 	CallWithRequestStream(req *Request, onChunk func(string)) (string, error)
+	// CallWithRequestFull returns both text content and tool calls.
+	// Use this when the request includes Tools — the LLM may respond with
+	// either a plain text reply (LLMResponse.Content) or tool invocations
+	// (LLMResponse.ToolCalls), but not both.
+	CallWithRequestFull(req *Request) (*LLMResponse, error)
 }
 
 // clientHooks internal hook interface (for subclass to override specific steps)
@@ -30,5 +35,6 @@ type clientHooks interface {
 	setAuthHeader(reqHeaders http.Header)
 	marshalRequestBody(requestBody map[string]any) ([]byte, error)
 	parseMCPResponse(body []byte) (string, error)
+	parseMCPResponseFull(body []byte) (*LLMResponse, error)
 	isRetryableError(err error) bool
 }

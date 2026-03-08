@@ -12,8 +12,39 @@ import (
 
 const maxIterations = 10
 
+// apiRequestTool is the single tool exposed to the LLM.
+// Native function calling means the LLM returns EITHER ToolCalls OR Content — never both.
+// This makes narration structurally impossible: text cannot appear alongside a tool call.
+var apiRequestTool = mcp.Tool{
+	Type: "function",
+	Function: mcp.FunctionDef{
+		Name:        "api_request",
+		Description: "Call the NOFX trading system REST API",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"method": map[string]any{
+					"type":        "string",
+					"enum":        []string{"GET", "POST", "PUT", "DELETE"},
+					"description": "HTTP method",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "API path; include query params in path: /api/positions?trader_id=xxx",
+				},
+				"body": map[string]any{
+					"type":        "object",
+					"description": "Request body; use {} for GET requests",
+				},
+			},
+			"required": []string{"method", "path", "body"},
+		},
+	},
+}
+
 // Agent is a stateful AI agent for one Telegram chat.
-// It has a single tool (api_call) and an unbounded decision loop.
+// It exposes a single "api_request" tool and runs a loop until the LLM
+// returns a plain-text reply (no tool calls).
 type Agent struct {
 	apiTool      *apiCallTool
 	getLLM       func() mcp.AIClient
@@ -34,17 +65,15 @@ func New(apiPort int, botToken, userID string, getLLM func() mcp.AIClient, syste
 }
 
 // GenerateBotToken creates a long-lived JWT for the bot's internal API calls.
-// userID must match the actual registered user's ID so that bot-made changes
-// are visible in the frontend (they share the same user namespace).
+// userID must match the actual registered user's ID so bot-made changes
+// are visible in the frontend (shared user namespace).
 func GenerateBotToken(userID string) (string, error) {
 	return auth.GenerateJWT(userID, "bot@internal")
 }
 
 // buildAccountContext fetches the live account state (models, exchanges, strategies, traders,
-// and per-trader account summary + statistics) via the local API and returns it as a formatted
-// string for injection into the LLM context. This gives the LLM immediate awareness of what
-// is already configured and the current financial state, so it never asks the user for
-// information that already exists.
+// and per-trader account summary + statistics) and returns it as a formatted string for
+// injection into the LLM context at the start of each conversation.
 func (a *Agent) buildAccountContext() string {
 	type q struct {
 		label string
@@ -91,135 +120,102 @@ func (a *Agent) buildAccountContext() string {
 	return sb.String()
 }
 
-// Run processes one user message through the agent loop.
-// Loop: LLM decides -> if <api_call>: execute, append result, loop -> if no tag: return reply.
+// Run processes one user message through the native function-calling agent loop.
 //
-// On the first message of a conversation, the current account state (models, exchanges,
-// strategies, traders) is automatically fetched and injected so the LLM knows what is
-// already configured without asking the user to repeat themselves.
+// Architecture:
+//   - LLM receives the api_request tool definition alongside conversation history.
+//   - LLM response is EITHER ToolCalls (execute API) OR Content (final reply) — never both.
+//     This is enforced by the protocol: narration is structurally impossible.
+//   - Loop continues until the LLM returns a plain-text reply (no tool calls).
 //
-// onChunk is optional. When non-nil, each LLM call is streamed:
-//   - Chunks are forwarded to onChunk until an <api_call> tag appears in the accumulated text.
-//   - After an api_call iteration completes, onChunk("⏳") resets the display to a thinking indicator.
-//   - The final reply is streamed progressively via onChunk.
+// On the first message of a conversation the live account state is fetched and injected.
+// onChunk is optional; when set it is called once with the complete final reply text.
 func (a *Agent) Run(userMessage string, onChunk func(string)) string {
 	llm := a.getLLM()
 	if llm == nil {
 		return "AI assistant unavailable. Please configure an AI model in the Web UI."
 	}
 
-	// Build turn messages: history context prefix + current user message.
-	// On the very first message (no history), prepend a live account state snapshot so the
-	// LLM immediately knows what models, exchanges, strategies, and traders are configured.
+	// Build initial user message: prepend account state on first turn, history on subsequent turns.
 	histCtx := a.memory.BuildContext()
-	var firstMsg string
+	var firstUserContent string
 	if histCtx == "" {
-		// First message in this conversation — fetch and inject account state.
 		accountCtx := a.buildAccountContext()
-		firstMsg = accountCtx + "\n[User Message]\n" + userMessage
+		firstUserContent = accountCtx + "\n[User Message]\n" + userMessage
 	} else {
-		firstMsg = histCtx + "\n---\nUser: " + userMessage
+		firstUserContent = histCtx + "\n---\nUser: " + userMessage
 	}
-	turnMsgs := []mcp.Message{mcp.NewUserMessage(firstMsg)}
 
-	var lastResp string
+	turnMsgs := []mcp.Message{mcp.NewUserMessage(firstUserContent)}
 
 	for i := 0; i < maxIterations; i++ {
 		req, err := mcp.NewRequestBuilder().
 			WithSystemPrompt(a.systemPrompt).
 			AddConversationHistory(turnMsgs).
+			AddTool(apiRequestTool).
+			WithToolChoice("auto").
 			Build()
 		if err != nil {
 			logger.Errorf("Agent: failed to build request: %v", err)
 			break
 		}
 
-		var resp string
-		if onChunk != nil {
-			// Stream this call; suppress chunks once an <api_call> tag appears.
-			// Also hold back the last (len("<api_call>")-1) chars of accumulated text to
-			// avoid showing partial opening tags (e.g. "<", "<ap") before we can detect them.
-			const tagLen = len("<api_call>") // 10
-			const safeOffset = tagLen - 1    // 9: max prefix of tag we might have received
-
-			var apiTagSeen bool
-			resp, err = llm.CallWithRequestStream(req, func(accumulated string) {
-				if apiTagSeen {
-					return
-				}
-				if idx := strings.Index(accumulated, "<api_call>"); idx >= 0 {
-					apiTagSeen = true
-					// Forward only the text that appeared before the tag.
-					if display := strings.TrimSpace(accumulated[:idx]); display != "" {
-						onChunk(display)
-					}
-					return
-				}
-				// Forward only the "safe" prefix — hold back the last safeOffset chars
-				// in case they are the beginning of an <api_call> tag.
-				if safe := len(accumulated) - safeOffset; safe > 0 {
-					onChunk(accumulated[:safe])
-				}
-			})
-		} else {
-			resp, err = llm.CallWithRequest(req)
-		}
+		resp, err := llm.CallWithRequestFull(req)
 		if err != nil {
 			logger.Errorf("Agent: LLM call failed (iteration %d): %v", i+1, err)
 			return "AI assistant temporarily unavailable. Please try again."
 		}
-		lastResp = resp
 
-		apiReq, textBefore := parseAPICall(resp)
-		if apiReq == nil {
-			// No api_call tag — LLM gave a final answer (already streamed if onChunk set).
-			reply := stripAPICallTag(strings.TrimSpace(resp))
+		// No tool calls → LLM returned a final text reply.
+		if len(resp.ToolCalls) == 0 {
+			reply := strings.TrimSpace(resp.Content)
+			if onChunk != nil {
+				onChunk(reply)
+			}
 			a.memory.Add("user", userMessage)
 			a.memory.Add("assistant", reply)
 			return reply
 		}
 
-		// api_call iteration — reset display to thinking indicator before executing.
+		// Tool call iteration — show thinking indicator.
 		if onChunk != nil {
 			onChunk("⏳")
 		}
 
-		logger.Infof("Agent: iter=%d %s %s", i+1, apiReq.Method, apiReq.Path)
-		result := a.apiTool.execute(apiReq)
+		// Append assistant message carrying the tool calls (no content field).
+		turnMsgs = append(turnMsgs, mcp.Message{
+			Role:      "assistant",
+			ToolCalls: resp.ToolCalls,
+		})
 
-		if textBefore != "" {
-			turnMsgs = append(turnMsgs, mcp.NewAssistantMessage(textBefore))
+		// Execute each tool call and append the results as tool messages.
+		for _, tc := range resp.ToolCalls {
+			var apiReq apiRequest
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &apiReq); err != nil {
+				logger.Errorf("Agent: invalid tool args for call %s: %v", tc.ID, err)
+				turnMsgs = append(turnMsgs, mcp.Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    fmt.Sprintf(`{"error":"invalid arguments: %s"}`, err.Error()),
+				})
+				continue
+			}
+			logger.Infof("Agent: iter=%d tool=%s %s %s", i+1, tc.ID, apiReq.Method, apiReq.Path)
+			result := a.apiTool.execute(&apiReq)
+			turnMsgs = append(turnMsgs, mcp.Message{
+				Role:       "tool",
+				ToolCallID: tc.ID,
+				Content:    result,
+			})
 		}
-		turnMsgs = append(turnMsgs, mcp.NewUserMessage(
-			fmt.Sprintf("[API result: %s %s]\n%s", apiReq.Method, apiReq.Path, result),
-		))
 	}
 
-	// Safety: max iterations reached — ask LLM for a final summary (non-streaming).
-	logger.Warnf("Agent: max iterations (%d) reached", maxIterations)
-	turnMsgs = append(turnMsgs, mcp.NewUserMessage("Please summarize the results and give the user a final reply."))
-	if finalReq, err := mcp.NewRequestBuilder().
-		WithSystemPrompt(a.systemPrompt).
-		AddConversationHistory(turnMsgs).
-		Build(); err == nil {
-		if finalResp, err := llm.CallWithRequest(finalReq); err == nil {
-			lastResp = finalResp
-		}
-	}
-
-	reply := stripAPICallTag(strings.TrimSpace(lastResp))
+	// Safety: max iterations reached.
+	logger.Warnf("Agent: max iterations (%d) reached for message: %q", maxIterations, userMessage)
+	reply := "操作已完成，请检查您的账户查看最新状态。"
 	a.memory.Add("user", userMessage)
 	a.memory.Add("assistant", reply)
 	return reply
-}
-
-// stripAPICallTag removes any <api_call>...</api_call> fragment from s.
-// Used as a defensive layer to ensure tags never leak to the user.
-func stripAPICallTag(s string) string {
-	if idx := strings.Index(s, "<api_call>"); idx >= 0 {
-		return strings.TrimSpace(s[:idx])
-	}
-	return s
 }
 
 // ResetMemory clears conversation history (called on /start).

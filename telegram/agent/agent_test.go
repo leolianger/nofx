@@ -11,34 +11,73 @@ import (
 	"nofx/mcp"
 )
 
+// mockLLM implements mcp.AIClient using pre-programmed LLMResponse objects.
+// Native function calling: CallWithRequestFull is the primary method;
+// CallWithRequest and CallWithRequestStream are stubs kept for interface compliance.
 type mockLLM struct {
-	responses []string
+	responses []*mcp.LLMResponse
 	calls     int
 	lastMsgs  []mcp.Message
 }
 
-func (m *mockLLM) SetAPIKey(_, _, _ string)                    {}
-func (m *mockLLM) SetTimeout(_ time.Duration)                  {}
-func (m *mockLLM) CallWithMessages(_, _ string) (string, error) { return m.next() }
+func (m *mockLLM) SetAPIKey(_, _, _ string)   {}
+func (m *mockLLM) SetTimeout(_ time.Duration) {}
+
+func (m *mockLLM) CallWithMessages(_, _ string) (string, error) { return "", nil }
+
 func (m *mockLLM) CallWithRequest(req *mcp.Request) (string, error) {
+	r, err := m.next()
+	if err != nil {
+		return "", err
+	}
+	return r.Content, nil
+}
+
+func (m *mockLLM) CallWithRequestStream(req *mcp.Request, onChunk func(string)) (string, error) {
+	r, err := m.next()
+	if err != nil {
+		return "", err
+	}
+	if onChunk != nil {
+		onChunk(r.Content)
+	}
+	return r.Content, nil
+}
+
+func (m *mockLLM) CallWithRequestFull(req *mcp.Request) (*mcp.LLMResponse, error) {
 	m.lastMsgs = req.Messages
 	return m.next()
 }
-func (m *mockLLM) CallWithRequestStream(req *mcp.Request, onChunk func(string)) (string, error) {
-	m.lastMsgs = req.Messages
-	r, err := m.next()
-	if onChunk != nil {
-		onChunk(r)
-	}
-	return r, err
-}
-func (m *mockLLM) next() (string, error) {
+
+func (m *mockLLM) next() (*mcp.LLMResponse, error) {
 	if m.calls < len(m.responses) {
 		r := m.responses[m.calls]
 		m.calls++
 		return r, nil
 	}
-	return "OK", nil
+	return &mcp.LLMResponse{Content: "OK"}, nil
+}
+
+// toolCall builds a mock LLM response that contains a single tool invocation.
+func toolCall(id, method, path string, body string) *mcp.LLMResponse {
+	if body == "" {
+		body = "{}"
+	}
+	return &mcp.LLMResponse{
+		ToolCalls: []mcp.ToolCall{{
+			ID:   id,
+			Type: "function",
+			Function: mcp.ToolCallFunction{
+				Name:      "api_request",
+				Arguments: fmt.Sprintf(`{"method":%q,"path":%q,"body":%s}`, method, path, body),
+			},
+		}},
+	}
+}
+
+// textReply builds a mock LLM response with a plain-text final answer.
+func textReply(content string) *mcp.LLMResponse {
+	return &mcp.LLMResponse{Content: content}
 }
 
 func mockGetLLM(llm *mockLLM) func() mcp.AIClient {
@@ -70,9 +109,9 @@ func mockAPIServer(handlers map[string]string) (*httptest.Server, int) {
 
 // ── Basic agent behaviour ──────────────────────────────────────────────────
 
-// TestAgentDirectReply: LLM replies without api_call — one call, direct reply.
+// TestAgentDirectReply: LLM replies with text (no tool calls) — one LLM call.
 func TestAgentDirectReply(t *testing.T) {
-	llm := &mockLLM{responses: []string{"Hello! How can I help you?"}}
+	llm := &mockLLM{responses: []*mcp.LLMResponse{textReply("Hello! How can I help you?")}}
 	a := New(8080, "tok", "test-user", mockGetLLM(llm), testPrompt)
 
 	reply := a.Run("hello", nil)
@@ -85,16 +124,16 @@ func TestAgentDirectReply(t *testing.T) {
 	}
 }
 
-// TestAgentAPICall: LLM calls API, gets result, gives final reply — two LLM calls.
+// TestAgentAPICall: LLM makes one tool call, gets result, gives final reply — two LLM calls.
 func TestAgentAPICall(t *testing.T) {
 	srv, port := mockAPIServer(map[string]string{
 		"/api/my-traders": `[{"trader_id":"t1","trader_name":"BTC Trader","is_running":false}]`,
 	})
 	defer srv.Close()
 
-	llm := &mockLLM{responses: []string{
-		`<api_call>{"method":"GET","path":"/api/my-traders","body":{}}</api_call>`,
-		"You have one trader: BTC Trader.",
+	llm := &mockLLM{responses: []*mcp.LLMResponse{
+		toolCall("c1", "GET", "/api/my-traders", "{}"),
+		textReply("You have one trader: BTC Trader."),
 	}}
 	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
 
@@ -108,7 +147,7 @@ func TestAgentAPICall(t *testing.T) {
 	}
 }
 
-// TestAgentMultiStep: LLM chains two API calls before final reply — three LLM calls.
+// TestAgentMultiStep: LLM chains two tool calls before final reply — three LLM calls.
 func TestAgentMultiStep(t *testing.T) {
 	srv, port := mockAPIServer(map[string]string{
 		"/api/account":   `{"total_equity":1000}`,
@@ -116,105 +155,118 @@ func TestAgentMultiStep(t *testing.T) {
 	})
 	defer srv.Close()
 
-	llm := &mockLLM{responses: []string{
-		`<api_call>{"method":"GET","path":"/api/account","body":{}}</api_call>`,
-		`<api_call>{"method":"GET","path":"/api/positions","body":{}}</api_call>`,
-		"Account looks healthy and no open positions.",
+	llm := &mockLLM{responses: []*mcp.LLMResponse{
+		toolCall("c1", "GET", "/api/account", "{}"),
+		toolCall("c2", "GET", "/api/positions", "{}"),
+		textReply("Account looks healthy and no open positions."),
 	}}
 	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
 
 	reply := a.Run("show me account status", nil)
 
 	if llm.calls != 3 {
-		t.Fatalf("expected 3 LLM calls (2 api + 1 final), got %d", llm.calls)
+		t.Fatalf("expected 3 LLM calls (2 tool + 1 final), got %d", llm.calls)
 	}
 	if reply != "Account looks healthy and no open positions." {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 }
 
-// TestAgentAPIResultInContext: API result must appear in next LLM message.
+// TestAgentAPIResultInContext: tool result must appear as a tool message in the next LLM call.
 func TestAgentAPIResultInContext(t *testing.T) {
 	srv, port := mockAPIServer(map[string]string{
 		"/api/account": `{"balance":1234.56}`,
 	})
 	defer srv.Close()
 
-	llm := &mockLLM{responses: []string{
-		`<api_call>{"method":"GET","path":"/api/account","body":{}}</api_call>`,
-		"Balance is 1234.56 USDT.",
+	llm := &mockLLM{responses: []*mcp.LLMResponse{
+		toolCall("c1", "GET", "/api/account", "{}"),
+		textReply("Balance is 1234.56 USDT."),
 	}}
 	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
 	a.Run("show balance", nil)
 
+	// The last request must contain a tool-result message with the balance data.
 	found := false
 	for _, msg := range llm.lastMsgs {
-		if strings.Contains(msg.Content, "API result") || strings.Contains(msg.Content, "balance") {
+		if msg.Role == "tool" && strings.Contains(msg.Content, "balance") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("API result not found in subsequent LLM context")
+		t.Fatalf("tool result message not found in subsequent LLM context; messages: %+v", llm.lastMsgs)
 	}
 }
 
-// ── NO NARRATION tests ─────────────────────────────────────────────────────
+// ── Narration-free architecture tests ─────────────────────────────────────
 
-// TestNoNarrationBeforeAPICall: any text before <api_call> must NOT reach the user.
-// The agent strips text-before-tag and only forwards it as assistant context.
-func TestNoNarrationBeforeAPICall(t *testing.T) {
+// TestNarrationStructurallyImpossible: when ToolCalls are present in the response,
+// any Content field is ignored and never surfaced to the user.
+// In real LLM APIs, Content is always empty alongside ToolCalls, but we verify
+// our agent handles a malformed response defensively.
+func TestNarrationStructurallyImpossible(t *testing.T) {
 	srv, port := mockAPIServer(map[string]string{
 		"/api/strategies": `[{"id":"s1","name":"BTC Trend"}]`,
 	})
 	defer srv.Close()
 
-	narrations := []string{
-		"现在我将为您创建策略。\n",
-		"好的，我来帮你查询。",
-		"Let me check this for you. ",
-		"正在处理...",
-		"I will call the API now. ",
+	// Simulate a (malformed) response that has both Content and ToolCalls.
+	malformed := &mcp.LLMResponse{
+		Content: "现在我将为您查询策略。", // narration — must NOT reach user
+		ToolCalls: []mcp.ToolCall{{
+			ID:   "c1",
+			Type: "function",
+			Function: mcp.ToolCallFunction{
+				Name:      "api_request",
+				Arguments: `{"method":"GET","path":"/api/strategies","body":{}}`,
+			},
+		}},
 	}
 
-	for _, narration := range narrations {
-		llm := &mockLLM{responses: []string{
-			// LLM outputs narration before the api_call tag (bad behaviour we must handle)
-			narration + `<api_call>{"method":"GET","path":"/api/strategies","body":{}}</api_call>`,
-			"你有1个策略：BTC Trend。",
-		}}
-		a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
-		reply := a.Run("查询我的策略", nil)
+	llm := &mockLLM{responses: []*mcp.LLMResponse{
+		malformed,
+		textReply("你有1个策略：BTC Trend。"),
+	}}
+	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
+	reply := a.Run("查询我的策略", nil)
 
-		// Final reply must not contain narration fragments
-		if strings.Contains(reply, "现在我将") || strings.Contains(reply, "Let me") ||
-			strings.Contains(reply, "正在处理") || strings.Contains(reply, "好的，我来") ||
-			strings.Contains(reply, "I will call") {
-			t.Fatalf("narration leaked into reply for input %q: got %q", narration, reply)
-		}
-		// api_call tag must not appear in reply
-		if strings.Contains(reply, "<api_call>") {
-			t.Fatalf("api_call tag leaked into reply: %q", reply)
-		}
+	if strings.Contains(reply, "现在我将") {
+		t.Fatalf("narration leaked into final reply: %q", reply)
+	}
+	if reply != "你有1个策略：BTC Trend。" {
+		t.Fatalf("unexpected reply: %q", reply)
 	}
 }
 
-// TestAPICallTagNotLeakedToUser: <api_call> tag must never appear in returned reply.
-func TestAPICallTagNotLeakedToUser(t *testing.T) {
+// TestOnChunkCalledWithFinalReply: onChunk receives the complete final reply.
+func TestOnChunkCalledWithFinalReply(t *testing.T) {
 	srv, port := mockAPIServer(map[string]string{
-		"/api/account": `{"total_equity":500}`,
+		"/api/account": `{"equity":500}`,
 	})
 	defer srv.Close()
 
-	llm := &mockLLM{responses: []string{
-		`<api_call>{"method":"GET","path":"/api/account","body":{}}</api_call>`,
-		`账户余额 500 USDT。<api_call>{"method":"GET","path":"/api/account","body":{}}</api_call>`,
+	llm := &mockLLM{responses: []*mcp.LLMResponse{
+		toolCall("c1", "GET", "/api/account", "{}"),
+		textReply("Equity: 500 USDT."),
 	}}
 	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
-	reply := a.Run("show balance", nil)
 
-	if strings.Contains(reply, "<api_call>") {
-		t.Fatalf("api_call tag leaked to user: %q", reply)
+	var chunks []string
+	reply := a.Run("show equity", func(chunk string) {
+		chunks = append(chunks, chunk)
+	})
+
+	if reply != "Equity: 500 USDT." {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	// Should have received ⏳ for the tool call, then the final reply.
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least 2 chunks (⏳ + final), got: %v", chunks)
+	}
+	lastChunk := chunks[len(chunks)-1]
+	if lastChunk != "Equity: 500 USDT." {
+		t.Fatalf("last chunk should be final reply, got: %q", lastChunk)
 	}
 }
 
@@ -224,18 +276,15 @@ func TestAPICallTagNotLeakedToUser(t *testing.T) {
 // Verifies: POST strategy → GET verify → final reply shows strategy info.
 func TestCreateStrategyWorkflow(t *testing.T) {
 	srv, port := mockAPIServer(map[string]string{
-		"POST /api/strategies":    `{"id":"s1","name":"BTC趋势"}`,
-		"GET /api/strategies/s1":  `{"id":"s1","name":"BTC趋势","config":{"coin_source":{"source_type":"static","static_coins":["BTC/USDT"]},"leverage":5}}`,
+		"POST /api/strategies":   `{"id":"s1","name":"BTC趋势"}`,
+		"GET /api/strategies/s1": `{"id":"s1","name":"BTC趋势","config":{"coin_source":{"source_type":"static","static_coins":["BTC/USDT"]},"leverage":5}}`,
 	})
 	defer srv.Close()
 
-	llm := &mockLLM{responses: []string{
-		// Step 1: create strategy
-		`<api_call>{"method":"POST","path":"/api/strategies","body":{"name":"BTC趋势","config":{}}}</api_call>`,
-		// Step 2: verify strategy
-		`<api_call>{"method":"GET","path":"/api/strategies/s1","body":{}}</api_call>`,
-		// Step 3: final reply
-		"策略已创建：BTC趋势，币种 BTC/USDT，杠杆 5x。",
+	llm := &mockLLM{responses: []*mcp.LLMResponse{
+		toolCall("c1", "POST", "/api/strategies", `{"name":"BTC趋势","config":{}}`),
+		toolCall("c2", "GET", "/api/strategies/s1", "{}"),
+		textReply("策略已创建：BTC趋势，币种 BTC/USDT，杠杆 5x。"),
 	}}
 	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
 	reply := a.Run("帮我配置个btc趋势交易的策略", nil)
@@ -243,12 +292,12 @@ func TestCreateStrategyWorkflow(t *testing.T) {
 	if llm.calls != 3 {
 		t.Fatalf("expected 3 LLM calls, got %d", llm.calls)
 	}
-	if reply == "" || strings.Contains(reply, "<api_call>") {
-		t.Fatalf("bad final reply: %q", reply)
+	if reply == "" {
+		t.Fatalf("empty final reply")
 	}
 }
 
-// TestFullSetupWorkflow: create strategy → create trader → start trader.
+// TestFullSetupWorkflow: create strategy → verify → create trader → start trader.
 // This is the "帮我配置策略并跑起来" workflow.
 func TestFullSetupWorkflow(t *testing.T) {
 	calls := map[string]int{}
@@ -272,17 +321,12 @@ func TestFullSetupWorkflow(t *testing.T) {
 	var port int
 	fmt.Sscanf(srv.Listener.Addr().String(), "127.0.0.1:%d", &port)
 
-	llm := &mockLLM{responses: []string{
-		// 1. create strategy
-		`<api_call>{"method":"POST","path":"/api/strategies","body":{"name":"BTC趋势"}}</api_call>`,
-		// 2. verify strategy
-		`<api_call>{"method":"GET","path":"/api/strategies/s1","body":{}}</api_call>`,
-		// 3. create trader
-		`<api_call>{"method":"POST","path":"/api/traders","body":{"name":"BTC趋势交易员","strategy_id":"s1"}}</api_call>`,
-		// 4. start trader
-		`<api_call>{"method":"POST","path":"/api/traders/tr1/start","body":{}}</api_call>`,
-		// 5. final reply
-		"策略和交易员已创建并启动！BTC趋势交易员正在运行。",
+	llm := &mockLLM{responses: []*mcp.LLMResponse{
+		toolCall("c1", "POST", "/api/strategies", `{"name":"BTC趋势"}`),
+		toolCall("c2", "GET", "/api/strategies/s1", "{}"),
+		toolCall("c3", "POST", "/api/traders", `{"name":"BTC趋势交易员","strategy_id":"s1"}`),
+		toolCall("c4", "POST", "/api/traders/tr1/start", "{}"),
+		textReply("策略和交易员已创建并启动！BTC趋势交易员正在运行。"),
 	}}
 	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
 	reply := a.Run("帮我配置个btc趋势交易的策略交易 跑起来", nil)
@@ -290,7 +334,6 @@ func TestFullSetupWorkflow(t *testing.T) {
 	if llm.calls != 5 {
 		t.Fatalf("expected 5 LLM calls, got %d", llm.calls)
 	}
-	// Verify each API was called
 	if calls["POST /api/strategies"] != 1 {
 		t.Errorf("expected 1 POST /api/strategies, got %d", calls["POST /api/strategies"])
 	}
@@ -300,8 +343,8 @@ func TestFullSetupWorkflow(t *testing.T) {
 	if calls["POST /api/traders/tr1/start"] != 1 {
 		t.Errorf("expected 1 POST /api/traders/tr1/start, got %d", calls["POST /api/traders/tr1/start"])
 	}
-	if strings.Contains(reply, "<api_call>") {
-		t.Fatalf("api_call tag in final reply: %q", reply)
+	if reply == "" {
+		t.Fatalf("empty final reply")
 	}
 }
 
@@ -324,10 +367,10 @@ func TestStartExistingTrader(t *testing.T) {
 	var port int
 	fmt.Sscanf(srv.Listener.Addr().String(), "127.0.0.1:%d", &port)
 
-	llm := &mockLLM{responses: []string{
-		`<api_call>{"method":"GET","path":"/api/my-traders","body":{}}</api_call>`,
-		`<api_call>{"method":"POST","path":"/api/traders/tr1/start","body":{}}</api_call>`,
-		"交易员 BTC Trader 已启动。",
+	llm := &mockLLM{responses: []*mcp.LLMResponse{
+		toolCall("c1", "GET", "/api/my-traders", "{}"),
+		toolCall("c2", "POST", "/api/traders/tr1/start", "{}"),
+		textReply("交易员 BTC Trader 已启动。"),
 	}}
 	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
 	reply := a.Run("启动交易员", nil)
@@ -335,96 +378,62 @@ func TestStartExistingTrader(t *testing.T) {
 	if calls["POST /api/traders/tr1/start"] != 1 {
 		t.Errorf("expected trader to be started, got %d start calls", calls["POST /api/traders/tr1/start"])
 	}
-	if strings.Contains(reply, "<api_call>") {
-		t.Fatalf("api_call tag in reply: %q", reply)
+	if reply != "交易员 BTC Trader 已启动。" {
+		t.Fatalf("unexpected reply: %q", reply)
 	}
 }
 
-// ── Parser tests ───────────────────────────────────────────────────────────
+// ── Safety limit ───────────────────────────────────────────────────────────
 
-// TestParseAPICall: unit tests for the XML tag parser.
-func TestParseAPICall(t *testing.T) {
-	t.Run("valid call no text before", func(t *testing.T) {
-		resp := `<api_call>{"method":"POST","path":"/api/traders/t1/stop","body":{}}</api_call>`
-		req, text := parseAPICall(resp)
-		if req == nil {
-			t.Fatal("expected api_call, got nil")
-		}
-		if req.Method != "POST" || req.Path != "/api/traders/t1/stop" {
-			t.Fatalf("unexpected req: %+v", req)
-		}
-		if text != "" {
-			t.Fatalf("expected empty text before tag, got: %q", text)
-		}
-	})
-
-	t.Run("text before tag is captured", func(t *testing.T) {
-		resp := `Stopping trader.<api_call>{"method":"POST","path":"/api/traders/t1/stop","body":{}}</api_call>`
-		req, text := parseAPICall(resp)
-		if req == nil {
-			t.Fatal("expected api_call, got nil")
-		}
-		if text != "Stopping trader." {
-			t.Fatalf("unexpected text before tag: %q", text)
-		}
-	})
-
-	t.Run("no call tag", func(t *testing.T) {
-		req, text := parseAPICall("Just a reply.")
-		if req != nil {
-			t.Fatal("expected nil api_call")
-		}
-		if text != "Just a reply." {
-			t.Fatalf("expected original text, got %q", text)
-		}
-	})
-
-	t.Run("malformed JSON", func(t *testing.T) {
-		req, _ := parseAPICall(`<api_call>NOT JSON</api_call>`)
-		if req != nil {
-			t.Fatal("expected nil for malformed JSON")
-		}
-	})
-}
-
-// TestStripAPICallTag: defensive cleanup of stray tags in final reply.
-func TestStripAPICallTag(t *testing.T) {
-	cases := []struct {
-		input string
-		want  string
-	}{
-		{`正常回复`, `正常回复`},
-		{`回复<api_call>{"method":"GET","path":"/x"}</api_call>`, `回复`},
-		{`<api_call>{"method":"GET","path":"/x"}</api_call>`, ``},
-	}
-	for _, c := range cases {
-		got := stripAPICallTag(c.input)
-		if strings.TrimSpace(got) != c.want {
-			t.Errorf("stripAPICallTag(%q) = %q, want %q", c.input, got, c.want)
-		}
-	}
-}
-
-// TestMaxIterations: agent stops after maxIterations and returns a summary.
+// TestMaxIterations: agent terminates after maxIterations and returns fallback message.
 func TestMaxIterations(t *testing.T) {
 	srv, port := mockAPIServer(map[string]string{
 		"/api/account": `{"ok":true}`,
 	})
 	defer srv.Close()
 
-	// Always returns another api_call — should hit max iterations
-	responses := make([]string, maxIterations+2)
+	// Always returns another tool call — should hit max iterations.
+	responses := make([]*mcp.LLMResponse, maxIterations+2)
 	for i := range responses {
-		responses[i] = `<api_call>{"method":"GET","path":"/api/account","body":{}}</api_call>`
+		responses[i] = toolCall(fmt.Sprintf("c%d", i), "GET", "/api/account", "{}")
 	}
-	responses[maxIterations] = "Final summary after max iterations."
 
 	llm := &mockLLM{responses: responses}
 	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
 	reply := a.Run("loop forever", nil)
 
-	if strings.Contains(reply, "<api_call>") {
-		t.Fatalf("api_call tag in reply after max iterations: %q", reply)
+	if reply == "" {
+		t.Fatalf("expected a fallback reply, got empty string")
 	}
-	_ = reply // just confirm it terminates
+	// Agent should have made exactly maxIterations tool-call LLM calls.
+	if llm.calls != maxIterations {
+		t.Fatalf("expected %d LLM calls (max iterations), got %d", maxIterations, llm.calls)
+	}
+}
+
+// TestToolCallIDPropagated: tool result messages carry the correct ToolCallID.
+func TestToolCallIDPropagated(t *testing.T) {
+	srv, port := mockAPIServer(map[string]string{
+		"/api/account": `{"balance":999}`,
+	})
+	defer srv.Close()
+
+	llm := &mockLLM{responses: []*mcp.LLMResponse{
+		toolCall("call-xyz-123", "GET", "/api/account", "{}"),
+		textReply("Balance is 999."),
+	}}
+	a := New(port, "tok", "test-user", mockGetLLM(llm), testPrompt)
+	a.Run("check balance", nil)
+
+	// Find the tool result message and verify ToolCallID matches.
+	found := false
+	for _, msg := range llm.lastMsgs {
+		if msg.Role == "tool" && msg.ToolCallID == "call-xyz-123" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("tool result with ToolCallID='call-xyz-123' not found in messages: %+v", llm.lastMsgs)
+	}
 }

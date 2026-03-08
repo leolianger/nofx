@@ -19,7 +19,7 @@ type apiCallTool struct {
 	client  *http.Client
 }
 
-// apiRequest is the parsed structure from the LLM's <api_call> tag.
+// apiRequest holds the arguments decoded from the LLM's api_request tool call.
 type apiRequest struct {
 	Method string         `json:"method"`
 	Path   string         `json:"path"`
@@ -86,24 +86,3 @@ func (t *apiCallTool) execute(req *apiRequest) string {
 	return string(body)
 }
 
-// parseAPICall extracts <api_call>...</api_call> from LLM response.
-// Returns (nil, original) if not found or malformed JSON.
-func parseAPICall(resp string) (*apiRequest, string) {
-	const openTag = "<api_call>"
-	const closeTag = "</api_call>"
-
-	start := strings.Index(resp, openTag)
-	end := strings.Index(resp, closeTag)
-	if start < 0 || end < 0 || end <= start {
-		return nil, resp
-	}
-
-	jsonStr := strings.TrimSpace(resp[start+len(openTag) : end])
-	var req apiRequest
-	if err := json.Unmarshal([]byte(jsonStr), &req); err != nil {
-		logger.Warnf("Agent: failed to parse api_call JSON %q: %v", jsonStr, err)
-		return nil, resp
-	}
-
-	return &req, strings.TrimSpace(resp[:start])
-}

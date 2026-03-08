@@ -234,10 +234,21 @@ func (client *Client) marshalRequestBody(requestBody map[string]any) ([]byte, er
 }
 
 func (client *Client) parseMCPResponse(body []byte) (string, error) {
+	r, err := client.parseMCPResponseFull(body)
+	if err != nil {
+		return "", err
+	}
+	return r.Content, nil
+}
+
+// parseMCPResponseFull parses the OpenAI-format response body and returns both
+// the text content and any tool calls.
+func (client *Client) parseMCPResponseFull(body []byte) (*LLMResponse, error) {
 	var result struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string     `json:"content"`
+				ToolCalls []ToolCall `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
@@ -248,11 +259,11 @@ func (client *Client) parseMCPResponse(body []byte) (string, error) {
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("API returned empty response")
+		return nil, fmt.Errorf("API returned empty response")
 	}
 
 	// Report token usage if callback is set
@@ -266,7 +277,11 @@ func (client *Client) parseMCPResponse(body []byte) (string, error) {
 		})
 	}
 
-	return result.Choices[0].Message.Content, nil
+	msg := result.Choices[0].Message
+	return &LLMResponse{
+		Content:   msg.Content,
+		ToolCalls: msg.ToolCalls,
+	}, nil
 }
 
 func (client *Client) buildUrl() string {
@@ -427,6 +442,70 @@ func (client *Client) CallWithRequest(req *Request) (string, error) {
 	return "", fmt.Errorf("still failed after %d retries: %w", maxRetries, lastErr)
 }
 
+// CallWithRequestFull calls the AI API and returns both text content and tool calls.
+func (client *Client) CallWithRequestFull(req *Request) (*LLMResponse, error) {
+	if client.APIKey == "" {
+		return nil, fmt.Errorf("AI API key not set, please call SetAPIKey first")
+	}
+	if req.Model == "" {
+		req.Model = client.Model
+	}
+
+	var lastErr error
+	maxRetries := client.config.MaxRetries
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if attempt > 1 {
+			client.logger.Warnf("⚠️  AI API call failed, retrying (%d/%d)...", attempt, maxRetries)
+		}
+		result, err := client.callWithRequestFull(req)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if !client.hooks.isRetryableError(err) {
+			return nil, err
+		}
+		if attempt < maxRetries {
+			waitTime := client.config.RetryWaitBase * time.Duration(attempt)
+			time.Sleep(waitTime)
+		}
+	}
+	return nil, fmt.Errorf("still failed after %d retries: %w", maxRetries, lastErr)
+}
+
+// callWithRequestFull single call that returns LLMResponse (content + tool calls).
+func (client *Client) callWithRequestFull(req *Request) (*LLMResponse, error) {
+	client.logger.Infof("📡 [%s] Request AI Server (full): BaseURL: %s", client.String(), client.BaseURL)
+
+	requestBody := client.buildRequestBodyFromRequest(req)
+	jsonData, err := client.hooks.marshalRequestBody(requestBody)
+	if err != nil {
+		return nil, err
+	}
+
+	url := client.hooks.buildUrl()
+	httpReq, err := client.hooks.buildRequest(url, jsonData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := client.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	return client.hooks.parseMCPResponseFull(body)
+}
+
 // callWithRequest single AI API call (using Request object)
 func (client *Client) callWithRequest(req *Request) (string, error) {
 	// Print current AI configuration
@@ -481,13 +560,23 @@ func (client *Client) callWithRequest(req *Request) (string, error) {
 
 // buildRequestBodyFromRequest builds request body from Request object
 func (client *Client) buildRequestBodyFromRequest(req *Request) map[string]any {
-	// Convert Message to API format
-	messages := make([]map[string]string, 0, len(req.Messages))
+	// Convert Message to API format — must use map[string]any to support
+	// tool-call messages (tool_calls, tool_call_id fields).
+	messages := make([]map[string]any, 0, len(req.Messages))
 	for _, msg := range req.Messages {
-		messages = append(messages, map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
-		})
+		m := map[string]any{"role": msg.Role}
+		if len(msg.ToolCalls) > 0 {
+			// Assistant message that contains tool invocations.
+			// content must be null/omitted for OpenAI compatibility.
+			m["tool_calls"] = msg.ToolCalls
+		} else if msg.ToolCallID != "" {
+			// Tool result message (role="tool").
+			m["tool_call_id"] = msg.ToolCallID
+			m["content"] = msg.Content
+		} else {
+			m["content"] = msg.Content
+		}
+		messages = append(messages, m)
 	}
 
 	// Build basic request body

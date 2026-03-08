@@ -92,6 +92,68 @@ func (c *ClaudeClient) buildMCPRequestBody(systemPrompt, userPrompt string) map[
 	return requestBody
 }
 
+// parseMCPResponseFull Claude response format — handles both text and tool_use blocks.
+func (c *ClaudeClient) parseMCPResponseFull(body []byte) (*LLMResponse, error) {
+	var response struct {
+		Content []struct {
+			Type  string          `json:"type"`
+			Text  string          `json:"text,omitempty"`
+			ID    string          `json:"id,omitempty"`
+			Name  string          `json:"name,omitempty"`
+			Input json.RawMessage `json:"input,omitempty"`
+		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+		Error *struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse Claude response: %w, body: %s", err, string(body))
+	}
+	if response.Error != nil {
+		return nil, fmt.Errorf("Claude API error: %s - %s", response.Error.Type, response.Error.Message)
+	}
+
+	totalTokens := response.Usage.InputTokens + response.Usage.OutputTokens
+	if TokenUsageCallback != nil && totalTokens > 0 {
+		TokenUsageCallback(TokenUsage{
+			Provider:         c.Provider,
+			Model:            c.Model,
+			PromptTokens:     response.Usage.InputTokens,
+			CompletionTokens: response.Usage.OutputTokens,
+			TotalTokens:      totalTokens,
+		})
+	}
+
+	result := &LLMResponse{}
+	for _, block := range response.Content {
+		switch block.Type {
+		case "text":
+			result.Content = block.Text
+		case "tool_use":
+			// Claude returns arguments as a JSON object (Input field); convert to string.
+			argsJSON, err := json.Marshal(block.Input)
+			if err != nil {
+				argsJSON = []byte("{}")
+			}
+			result.ToolCalls = append(result.ToolCalls, ToolCall{
+				ID:   block.ID,
+				Type: "function",
+				Function: ToolCallFunction{
+					Name:      block.Name,
+					Arguments: string(argsJSON),
+				},
+			})
+		}
+	}
+	return result, nil
+}
+
 // parseMCPResponse Claude has different response format
 func (c *ClaudeClient) parseMCPResponse(body []byte) (string, error) {
 	var response struct {
