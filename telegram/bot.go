@@ -122,9 +122,9 @@ func runBot(token string, cfg *config.Config, st *store.Store) bool {
 			if lang != "" {
 				awaitingLang = false
 				st.TelegramConfig().SetLanguage(lang) //nolint:errcheck
-				sendMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken, lang))
+				sendMarkdownMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken, lang))
 			} else {
-				sendMsg(bot, chatID, langSelectionMsg())
+				sendMarkdownMsg(bot, chatID, langSelectionMsg())
 			}
 			continue
 		}
@@ -146,14 +146,13 @@ func runBot(token string, cfg *config.Config, st *store.Store) bool {
 			} else {
 				agents.Reset(chatID)
 			}
-			// Show language selection if not chosen yet; otherwise go straight to guide.
-			lang := st.TelegramConfig().GetLanguage()
-			if lang == "en" && isLangDefault(st) {
-				// First time: ask language preference
+			// Show language selection if user has never chosen (Language == ""); go straight to guide otherwise.
+			if isLangDefault(st) {
 				awaitingLang = true
-				sendMsg(bot, chatID, langSelectionMsg())
+				sendMarkdownMsg(bot, chatID, langSelectionMsg())
 			} else {
-				sendMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken, lang))
+				lang := st.TelegramConfig().GetLanguage()
+				sendMarkdownMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken, lang))
 			}
 			continue
 		}
@@ -161,14 +160,14 @@ func runBot(token string, cfg *config.Config, st *store.Store) bool {
 		// Handle /lang: change language at any time
 		if text == "/lang" {
 			awaitingLang = true
-			sendMsg(bot, chatID, langSelectionMsg())
+			sendMarkdownMsg(bot, chatID, langSelectionMsg())
 			continue
 		}
 
 		// Handle /help
 		if text == "/help" {
 			lang := st.TelegramConfig().GetLanguage()
-			sendMsg(bot, chatID, helpMessage(lang))
+			sendMarkdownMsg(bot, chatID, helpMessage(lang))
 			continue
 		}
 
@@ -188,13 +187,13 @@ func runBot(token string, cfg *config.Config, st *store.Store) bool {
 		// Direct setup commands (no LLM needed): "configure deepseek sk-xxx" / "配置 deepseek sk-xxx"
 		lang := st.TelegramConfig().GetLanguage()
 		if reply, handled := tryHandleSetupCommand(text, cfg.APIServerPort, botToken, st, botUserID, lang); handled {
-			sendMsg(bot, chatID, reply)
+			sendMarkdownMsg(bot, chatID, reply)
 			continue
 		}
 
 		// Guard: if no AI model configured, show setup guide instead of failing.
 		if newLLMClient(st, botUserID) == nil {
-			sendMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken, lang))
+			sendMarkdownMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken, lang))
 			continue
 		}
 
@@ -257,6 +256,17 @@ func runBot(token string, cfg *config.Config, st *store.Store) bool {
 func sendMsg(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	bot.Send(msg) //nolint:errcheck
+}
+
+// sendMarkdownMsg sends a message with Markdown formatting; falls back to plain text on parse error.
+func sendMarkdownMsg(bot *tgbotapi.BotAPI, chatID int64, text string) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "Markdown"
+	if _, err := bot.Send(msg); err != nil {
+		// Markdown rejected (e.g. unescaped special chars) — fall back to plain text.
+		plain := tgbotapi.NewMessage(chatID, text)
+		bot.Send(plain) //nolint:errcheck
+	}
 }
 
 // newLLMClient builds an LLM client for the agent using the bound user's enabled model.
