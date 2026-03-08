@@ -17,6 +17,7 @@ type TelegramConfig struct {
 	Username  string    `gorm:"column:username"` // @username for display
 	BoundAt   time.Time `gorm:"column:bound_at"`
 	ModelID   string    `gorm:"column:model_id;default:''"` // AI model used for Telegram replies
+	Language  string    `gorm:"column:language;default:''"` // "zh" or "en"; empty = not chosen yet
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -40,6 +41,8 @@ type TelegramConfigStore interface {
 	IsBound() (bool, error)                           // Check if any user is bound
 	GetBoundChatID() (int64, error)                   // Get bound chat ID (0 if not bound)
 	Unbind() error                                    // Remove binding
+	SetLanguage(lang string) error                    // Set UI language ("en" or "zh")
+	GetLanguage() string                              // Get UI language; returns "en" if not set
 }
 
 type telegramConfigStore struct {
@@ -132,4 +135,30 @@ func (s *telegramConfigStore) Unbind() error {
 		"chat_id":  0,
 		"username": "",
 	}).Error
+}
+
+func (s *telegramConfigStore) SetLanguage(lang string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var cfg TelegramConfig
+	result := s.db.First(&cfg, 1)
+	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return result.Error
+	}
+	cfg.ID = 1
+	cfg.Language = lang
+	return s.db.Save(&cfg).Error
+}
+
+func (s *telegramConfigStore) GetLanguage() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var cfg TelegramConfig
+	if err := s.db.First(&cfg, 1).Error; err != nil {
+		return "en" // default: English
+	}
+	if cfg.Language == "" {
+		return "en"
+	}
+	return cfg.Language
 }

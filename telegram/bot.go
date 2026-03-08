@@ -104,6 +104,10 @@ func runBot(token string, cfg *config.Config, st *store.Store) bool {
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
+	// awaitingLang is true when the bot is waiting for the user to pick a language (1 or 2).
+	// It resets to false once a valid choice is received or /lang is re-issued.
+	awaitingLang := false
+
 	for update := range updates {
 		if update.Message == nil {
 			continue
@@ -111,56 +115,86 @@ func runBot(token string, cfg *config.Config, st *store.Store) bool {
 		chatID := update.Message.Chat.ID
 		text := update.Message.Text
 
-		// Handle /start: auto-bind or welcome with setup guide
+		// Language selection state: user must choose "1" or "2" after /start on first use.
+		// awaitingLang is true only until the user makes a choice (or we fall back to "en").
+		if awaitingLang && chatID == allowedChatID {
+			lang := parseLangChoice(text)
+			if lang != "" {
+				awaitingLang = false
+				st.TelegramConfig().SetLanguage(lang) //nolint:errcheck
+				sendMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken, lang))
+			} else {
+				sendMsg(bot, chatID, langSelectionMsg())
+			}
+			continue
+		}
+
+		// Handle /start: auto-bind or language selection / welcome
 		if text == "/start" {
 			if allowedChatID == 0 {
 				username := update.Message.From.UserName
 				if err := st.TelegramConfig().BindUser(chatID, "@"+username); err != nil {
 					logger.Errorf("Failed to bind Telegram user: %v", err)
-					sendMsg(bot, chatID, "绑定失败，请查看服务器日志。")
+					sendMsg(bot, chatID, "Binding failed. / 绑定失败。")
 					continue
 				}
 				allowedChatID = chatID
 				logger.Infof("Telegram bound to @%s (chatID: %d)", username, chatID)
 			} else if chatID != allowedChatID {
-				sendMsg(bot, chatID, "该机器人已被其他用户绑定。")
+				sendMsg(bot, chatID, "This bot is already bound to another user. / 该机器人已被其他用户绑定。")
 				continue
 			} else {
 				agents.Reset(chatID)
 			}
-			sendMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken))
+			// Show language selection if not chosen yet; otherwise go straight to guide.
+			lang := st.TelegramConfig().GetLanguage()
+			if lang == "en" && isLangDefault(st) {
+				// First time: ask language preference
+				awaitingLang = true
+				sendMsg(bot, chatID, langSelectionMsg())
+			} else {
+				sendMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken, lang))
+			}
+			continue
+		}
+
+		// Handle /lang: change language at any time
+		if text == "/lang" {
+			awaitingLang = true
+			sendMsg(bot, chatID, langSelectionMsg())
 			continue
 		}
 
 		// Handle /help
 		if text == "/help" {
-			sendMsg(bot, chatID, helpMessage())
+			lang := st.TelegramConfig().GetLanguage()
+			sendMsg(bot, chatID, helpMessage(lang))
 			continue
 		}
 
 		// Access control
 		if allowedChatID != 0 && chatID != allowedChatID {
-			sendMsg(bot, chatID, "无权限访问。")
+			sendMsg(bot, chatID, "Unauthorized. / 无权限访问。")
 			continue
 		}
 		if allowedChatID == 0 {
-			sendMsg(bot, chatID, "请先发送 /start 绑定账号。")
+			sendMsg(bot, chatID, "Send /start first. / 请先发送 /start。")
 			continue
 		}
 		if text == "" {
 			continue
 		}
 
-		// Direct setup commands — handled without LLM so they work even before
-		// an AI model is configured. Format: "配置 <provider> <api-key>"
-		if reply, handled := tryHandleSetupCommand(text, cfg.APIServerPort, botToken, st, botUserID); handled {
+		// Direct setup commands (no LLM needed): "configure deepseek sk-xxx" / "配置 deepseek sk-xxx"
+		lang := st.TelegramConfig().GetLanguage()
+		if reply, handled := tryHandleSetupCommand(text, cfg.APIServerPort, botToken, st, botUserID, lang); handled {
 			sendMsg(bot, chatID, reply)
 			continue
 		}
 
-		// Check if AI model is configured before entering agent loop.
+		// Guard: if no AI model configured, show setup guide instead of failing.
 		if newLLMClient(st, botUserID) == nil {
-			sendMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken))
+			sendMsg(bot, chatID, buildSetupGuide(st, botUserID, cfg.APIServerPort, botToken, lang))
 			continue
 		}
 
@@ -286,18 +320,53 @@ func clientForProvider(provider string) mcp.AIClient {
 	}
 }
 
-// buildSetupGuide checks the current configuration state and returns a contextual
-// onboarding message. Called on every /start so the user always knows what to do next.
-func buildSetupGuide(st *store.Store, userID string, apiPort int, botToken string) string {
+// ── Language selection ────────────────────────────────────────────────────────
+
+// langSelectionMsg is always bilingual so it works before a language is chosen.
+func langSelectionMsg() string {
+	return `🌐 *Please select your language / 请选择语言*
+
+1️⃣  English
+2️⃣  中文
+
+Reply with 1 or 2 / 发送 1 或 2`
+}
+
+// parseLangChoice returns "en", "zh", or "" (unrecognised).
+func parseLangChoice(text string) string {
+	switch strings.TrimSpace(text) {
+	case "1", "English", "english", "en", "EN":
+		return "en"
+	case "2", "中文", "zh", "ZH", "chinese", "Chinese":
+		return "zh"
+	}
+	return ""
+}
+
+// isLangDefault returns true if the user has never explicitly picked a language
+// (i.e. the stored value is empty — the "en" default from GetLanguage() is a fallback).
+func isLangDefault(st *store.Store) bool {
+	cfg, err := st.TelegramConfig().Get()
+	if err != nil {
+		return true
+	}
+	return cfg.Language == ""
+}
+
+// ── Setup guide ───────────────────────────────────────────────────────────────
+
+// buildSetupGuide returns a context-aware onboarding message in the chosen language.
+func buildSetupGuide(st *store.Store, userID string, apiPort int, botToken string, lang string) string {
 	// Step 1: AI model configured?
 	if _, err := st.AIModel().GetDefault(userID); err != nil {
-		return `🤖 *NOFX 个人 AI 交易助手*
+		if lang == "zh" {
+			return `🤖 *NOFX 个人 AI 交易助手*
 
-欢迎！在开始交易前，需要先配置 AI 模型。
+欢迎！开始前需要配置 AI 模型。
 
 *第一步：配置 AI 模型*
 
-选择你有账号的服务商，发送以下格式的消息：
+发送以下格式（选一个你有账号的服务商）：
 
 ` + "```" + `
 配置 deepseek  你的API-Key
@@ -309,8 +378,33 @@ func buildSetupGuide(st *store.Store, userID string, apiPort int, botToken strin
 配置 gemini    你的API-Key
 ` + "```" + `
 
-*推荐*：DeepSeek 价格最低，效果很好
-获取 Key：https://platform.deepseek.com/api_keys`
+*推荐*：DeepSeek 价格低、效果好
+获取 Key：https://platform.deepseek.com/api_keys
+
+发送 /lang 切换语言`
+		}
+		return `🤖 *NOFX Personal AI Trading Bot*
+
+Welcome! You need to configure an AI model before trading.
+
+*Step 1: Configure AI Model*
+
+Send a message in this format (pick a provider you have access to):
+
+` + "```" + `
+configure deepseek  your-api-key
+configure openai    your-api-key
+configure claude    your-api-key
+configure qwen      your-api-key
+configure kimi      your-api-key
+configure grok      your-api-key
+configure gemini    your-api-key
+` + "```" + `
+
+*Recommended*: DeepSeek — low cost, great performance
+Get your key: https://platform.deepseek.com/api_keys
+
+Send /lang to change language`
 	}
 
 	// Step 2: Exchange configured?
@@ -323,25 +417,37 @@ func buildSetupGuide(st *store.Store, userID string, apiPort int, botToken strin
 		}
 	}
 	if !hasEnabled {
-		return `✅ AI 模型已配置！
+		if lang == "zh" {
+			return `✅ AI 模型已配置！
 
 *第二步：配置交易所*
 
 直接发消息告诉我交易所信息，例如：
 
-_"帮我配置 OKX 交易所，API Key 是 xxx，Secret 是 xxx，Passphrase 是 xxx"_
-
+_"帮我配置 OKX，API Key 是 xxx，Secret 是 xxx，Passphrase 是 xxx"_
 _"帮我配置 Binance，API Key 是 xxx，Secret Key 是 xxx"_
-
 _"帮我配置 Bybit，API Key 是 xxx，Secret Key 是 xxx"_
 
-交易所 API Key 去交易所官网 → 账户设置 → API 管理 → 新建 Key（需要开启合约交易权限）`
+去交易所官网 → 账户设置 → API 管理 → 新建（需开启合约交易权限）`
+		}
+		return `✅ AI model configured!
+
+*Step 2: Configure Exchange*
+
+Just tell me your exchange credentials, for example:
+
+_"Configure OKX, API Key is xxx, Secret is xxx, Passphrase is xxx"_
+_"Configure Binance, API Key is xxx, Secret Key is xxx"_
+_"Configure Bybit, API Key is xxx, Secret Key is xxx"_
+
+Go to your exchange → Account → API Management → Create Key (enable futures/contract trading)`
 	}
 
-	// All configured — show full capabilities
-	return `✅ *NOFX 交易助手已就绪*
+	// All configured
+	if lang == "zh" {
+		return `✅ *NOFX 交易助手已就绪*
 
-直接用自然语言告诉我你要做什么：
+直接发消息告诉我你要做什么：
 
 *查询*
 _"查看我的持仓"_、_"查看账户余额"_
@@ -353,24 +459,42 @@ _"创建保守型策略，只交易 BTC 和 ETH"_
 *控制*
 _"启动交易员"_、_"暂停交易员"_
 
-*查看数据*
-_"查看今天的交易记录"_、_"查看盈亏统计"_
+/start 重置对话 | /help 帮助 | /lang 切换语言`
+	}
+	return `✅ *NOFX Trading Bot Ready*
 
-发送 /start 重置对话 | /help 查看更多`
+Just tell me what you want to do:
+
+*Query*
+_"Show my positions"_, _"Show account balance"_
+
+*Create & Start Trading*
+_"Create a BTC trend strategy and start it"_
+_"Create a conservative strategy, BTC and ETH only"_
+
+*Control*
+_"Start trader"_, _"Stop trader"_
+
+/start reset session | /help | /lang change language`
 }
 
-// tryHandleSetupCommand handles "配置 <provider> <api-key>" commands directly
-// without going through the LLM. This allows AI model setup even before any
-// model is configured (bootstrapping problem).
-func tryHandleSetupCommand(text string, apiPort int, botToken string, st *store.Store, userID string) (string, bool) {
+// ── Direct setup commands (no LLM required) ───────────────────────────────────
+
+// tryHandleSetupCommand intercepts "configure/配置 <provider> <key>" messages
+// and calls PUT /api/models directly — no LLM needed, works during bootstrapping.
+func tryHandleSetupCommand(text string, apiPort int, botToken string, st *store.Store, userID string, lang string) (string, bool) {
 	text = strings.TrimSpace(text)
-	if !strings.HasPrefix(text, "配置 ") && !strings.HasPrefix(strings.ToLower(text), "setup ") {
+	lower := strings.ToLower(text)
+	if !strings.HasPrefix(text, "配置 ") && !strings.HasPrefix(lower, "configure ") {
 		return "", false
 	}
 
 	parts := strings.Fields(text)
 	if len(parts) < 3 {
-		return "格式：配置 <服务商> <API-Key>\n例如：配置 deepseek sk-xxxxxxxxx", true
+		if lang == "zh" {
+			return "格式：配置 <服务商> <API-Key>\n例如：配置 deepseek sk-xxxxxxxxx", true
+		}
+		return "Format: configure <provider> <api-key>\nExample: configure deepseek sk-xxxxxxxxx", true
 	}
 
 	provider := strings.ToLower(parts[1])
@@ -381,49 +505,60 @@ func tryHandleSetupCommand(text string, apiPort int, botToken string, st *store.
 		"qwen": true, "kimi": true, "grok": true, "gemini": true,
 	}
 	if !validProviders[provider] {
-		return fmt.Sprintf("不支持的服务商：%s\n支持：openai / deepseek / claude / qwen / kimi / grok / gemini", provider), true
+		if lang == "zh" {
+			return fmt.Sprintf("不支持的服务商：%s\n支持：openai / deepseek / claude / qwen / kimi / grok / gemini", provider), true
+		}
+		return fmt.Sprintf("Unknown provider: %s\nSupported: openai / deepseek / claude / qwen / kimi / grok / gemini", provider), true
 	}
 
-	// Call PUT /api/models directly without LLM.
 	body, _ := json.Marshal(map[string]any{
 		"models": map[string]any{
-			provider: map[string]any{
-				"enabled": true,
-				"api_key": apiKey,
-			},
+			provider: map[string]any{"enabled": true, "api_key": apiKey},
 		},
 	})
 	req, err := http.NewRequest("PUT", fmt.Sprintf("http://127.0.0.1:%d/api/models", apiPort), bytes.NewReader(body))
 	if err != nil {
-		return "配置请求失败，请稍后重试", true
+		if lang == "zh" {
+			return "配置请求失败，请稍后重试", true
+		}
+		return "Failed to create request, please try again", true
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+botToken)
 
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
-		return "无法连接到服务，请确认服务正常运行", true
+		if lang == "zh" {
+			return "无法连接服务，请确认服务正常运行", true
+		}
+		return "Cannot reach service, please check it is running", true
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 400 {
-		return fmt.Sprintf("配置失败（%d）：%s", resp.StatusCode, string(respBody)), true
+		return fmt.Sprintf("Error %d: %s", resp.StatusCode, string(respBody)), true
 	}
 
 	logger.Infof("Bot: setup command configured provider=%s", provider)
-	return fmt.Sprintf("✅ %s 配置成功！\n\n发送 /start 查看下一步", provider), true
+	if lang == "zh" {
+		return fmt.Sprintf("✅ %s 配置成功！\n\n发送 /start 查看下一步", provider), true
+	}
+	return fmt.Sprintf("✅ %s configured successfully!\n\nSend /start to see the next step", provider), true
 }
 
-func helpMessage() string {
-	return `*NOFX 使用指南*
+// ── Help message ──────────────────────────────────────────────────────────────
+
+func helpMessage(lang string) string {
+	if lang == "zh" {
+		return `*NOFX 使用指南*
 
 *查询*
 - "查看我的持仓"
 - "查看账户余额"
 - "列出我的交易员"
 
-*交易控制*
+*控制*
 - "启动交易员"
 - "暂停 xxx 交易员"
 
@@ -431,13 +566,36 @@ func helpMessage() string {
 - "帮我创建 BTC 趋势策略并跑起来"
 - "创建保守型策略，BTC ETH，止损 8%"
 
-*配置*（不需要 AI，直接发）
-- "配置 deepseek sk-xxxx"
-- "帮我配置 OKX 交易所，Key 是 xxx"
+*直接配置（不需要 AI）*
+- 配置 deepseek sk-xxxx
+- 配置 openai sk-xxxx
 
 *命令*
 /start - 重置对话 / 查看配置状态
-/help  - 显示此帮助
+/lang  - 切换语言
+/help  - 显示此帮助`
+	}
+	return `*NOFX Help*
 
-支持中文和英文，直接说你想做什么就行。`
+*Query*
+- "Show my positions"
+- "Show account balance"
+- "List my traders"
+
+*Control*
+- "Start trader"
+- "Stop trader [name]"
+
+*Create strategy*
+- "Create a BTC trend strategy and start it"
+- "Create a conservative strategy, BTC and ETH, 8% stop loss"
+
+*Direct setup (no AI needed)*
+- configure deepseek sk-xxxx
+- configure openai sk-xxxx
+
+*Commands*
+/start - Reset session / check setup status
+/lang  - Change language
+/help  - Show this help`
 }
