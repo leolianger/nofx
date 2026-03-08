@@ -477,7 +477,7 @@ func (client *Client) CallWithRequestFull(req *Request) (*LLMResponse, error) {
 func (client *Client) callWithRequestFull(req *Request) (*LLMResponse, error) {
 	client.logger.Infof("📡 [%s] Request AI Server (full): BaseURL: %s", client.String(), client.BaseURL)
 
-	requestBody := client.buildRequestBodyFromRequest(req)
+	requestBody := client.hooks.buildRequestBodyFromRequest(req)
 	jsonData, err := client.hooks.marshalRequestBody(requestBody)
 	if err != nil {
 		return nil, err
@@ -512,44 +512,36 @@ func (client *Client) callWithRequest(req *Request) (string, error) {
 	client.logger.Infof("📡 [%s] Request AI Server with Builder: BaseURL: %s", client.String(), client.BaseURL)
 	client.logger.Debugf("[%s] Messages count: %d", client.String(), len(req.Messages))
 
-	// Build request body (from Request object)
-	requestBody := client.buildRequestBodyFromRequest(req)
+	requestBody := client.hooks.buildRequestBodyFromRequest(req)
 
-	// Serialize request body
 	jsonData, err := client.hooks.marshalRequestBody(requestBody)
 	if err != nil {
 		return "", err
 	}
 
-	// Build URL
 	url := client.hooks.buildUrl()
 	client.logger.Infof("📡 [MCP %s] Request URL: %s", client.String(), url)
 
-	// Create HTTP request
 	httpReq, err := client.hooks.buildRequest(url, jsonData)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Send HTTP request
 	resp, err := client.httpClient.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Check HTTP status code
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("API returned error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response
 	result, err := client.hooks.parseMCPResponse(body)
 	if err != nil {
 		return "", fmt.Errorf("fail to parse AI server response: %w", err)
@@ -651,7 +643,7 @@ func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) 
 	}
 	req.Stream = true
 
-	requestBody := client.buildRequestBodyFromRequest(req)
+	requestBody := client.hooks.buildRequestBodyFromRequest(req)
 	jsonData, err := client.hooks.marshalRequestBody(requestBody)
 	if err != nil {
 		return "", err
