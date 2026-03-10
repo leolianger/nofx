@@ -266,15 +266,39 @@ func sendMarkdownMsg(bot *tgbotapi.BotAPI, chatID int64, text string) {
 // ── LLM client ───────────────────────────────────────────────────────────────
 
 func newLLMClient(st *store.Store, userID string) mcp.AIClient {
+	// 1. Prefer the model explicitly configured for Telegram (Settings → Telegram → AI Model)
+	if tgCfg, err := st.TelegramConfig().Get(); err == nil && tgCfg.ModelID != "" {
+		if model, err := st.AIModel().Get(userID, tgCfg.ModelID); err == nil && model.Enabled {
+			apiKey := string(model.APIKey)
+			if apiKey != "" {
+				client := clientForProvider(model.Provider)
+				client.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
+				if isUSDCProvider(model.Provider) {
+					logger.Infof("Telegram agent: provider=%s (USDC payment) user=%s", model.Provider, userID)
+				} else {
+					logger.Infof("Telegram agent: provider=%s user=%s", model.Provider, userID)
+				}
+				return client
+			}
+		}
+	}
+
+	// 2. Fall back to first enabled model
 	if model, err := st.AIModel().GetDefault(userID); err == nil {
 		apiKey := string(model.APIKey)
 		if apiKey != "" {
 			client := clientForProvider(model.Provider)
 			client.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
-			logger.Infof("Telegram agent: provider=%s user=%s", model.Provider, userID)
+			if isUSDCProvider(model.Provider) {
+				logger.Infof("Telegram agent: provider=%s (USDC payment) user=%s", model.Provider, userID)
+			} else {
+				logger.Infof("Telegram agent: provider=%s user=%s", model.Provider, userID)
+			}
 			return client
 		}
 	}
+
+	// 3. Environment variable fallback
 	for _, pair := range []struct{ provider, key, url string }{
 		{"deepseek", os.Getenv("DEEPSEEK_API_KEY"), mcp.DefaultDeepSeekBaseURL},
 		{"openai", os.Getenv("OPENAI_API_KEY"), ""},
@@ -287,6 +311,11 @@ func newLLMClient(st *store.Store, userID string) mcp.AIClient {
 		}
 	}
 	return nil
+}
+
+// isUSDCProvider returns true for providers that pay per call with USDC (x402 protocol).
+func isUSDCProvider(provider string) bool {
+	return provider == "blockrun-base" || provider == "blockrun-sol"
 }
 
 func clientForProvider(provider string) mcp.AIClient {
@@ -305,6 +334,12 @@ func clientForProvider(provider string) mcp.AIClient {
 		return mcp.NewGrokClient()
 	case "gemini":
 		return mcp.NewGeminiClient()
+	case "minimax":
+		return mcp.NewMiniMaxClient()
+	case "blockrun-base":
+		return mcp.NewBlockRunBaseClient()
+	case "blockrun-sol":
+		return mcp.NewBlockRunSolClient()
 	default:
 		return mcp.NewDeepSeekClient()
 	}

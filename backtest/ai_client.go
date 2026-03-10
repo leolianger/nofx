@@ -78,6 +78,20 @@ func configureMCPClient(cfg BacktestConfig, base mcp.AIClient) (mcp.AIClient, er
 		mmC := mcp.NewMiniMaxClientWithOptions()
 		mmC.(*mcp.MiniMaxClient).SetAPIKey(cfg.AICfg.APIKey, cfg.AICfg.BaseURL, cfg.AICfg.Model)
 		return mmC, nil
+	case "blockrun-base":
+		if cfg.AICfg.APIKey == "" {
+			return nil, fmt.Errorf("blockrun-base provider requires wallet private key")
+		}
+		brBase := mcp.NewBlockRunBaseClient()
+		brBase.SetAPIKey(cfg.AICfg.APIKey, "", cfg.AICfg.Model)
+		return brBase, nil
+	case "blockrun-sol":
+		if cfg.AICfg.APIKey == "" {
+			return nil, fmt.Errorf("blockrun-sol provider requires wallet keypair")
+		}
+		brSol := mcp.NewBlockRunSolClient()
+		brSol.SetAPIKey(cfg.AICfg.APIKey, "", cfg.AICfg.Model)
+		return brSol, nil
 	case "custom":
 		if cfg.AICfg.BaseURL == "" || cfg.AICfg.APIKey == "" || cfg.AICfg.Model == "" {
 			return nil, fmt.Errorf("custom provider requires base_url, api key and model")

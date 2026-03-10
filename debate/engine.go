@@ -99,6 +99,10 @@ func (e *DebateEngine) InitializeClients(participants []*store.DebateParticipant
 			client = mcp.NewKimiClient()
 		case "minimax":
 			client = mcp.NewMiniMaxClient()
+		case "blockrun-base":
+			client = mcp.NewBlockRunBaseClient()
+		case "blockrun-sol":
+			client = mcp.NewBlockRunSolClient()
 		default:
 			client = mcp.New()
 		}

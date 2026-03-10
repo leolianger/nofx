@@ -668,6 +668,12 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 	case "minimax":
 		aiClient = mcp.NewMiniMaxClient()
 		aiClient.SetAPIKey(apiKey, model.CustomAPIURL, model.CustomModelName)
+	case "blockrun-base":
+		aiClient = mcp.NewBlockRunBaseClient()
+		aiClient.SetAPIKey(apiKey, "", model.CustomModelName)
+	case "blockrun-sol":
+		aiClient = mcp.NewBlockRunSolClient()
+		aiClient.SetAPIKey(apiKey, "", model.CustomModelName)
 	default:
 		// Use generic client
 		aiClient = mcp.NewClient()
