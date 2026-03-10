@@ -169,21 +169,9 @@ func (c *BlockRunBaseClient) call(systemPrompt, userPrompt string) (string, erro
 
 // x402v2PaymentRequired is the structure of the X-Payment-Required header (x402 v2).
 type x402v2PaymentRequired struct {
-	X402Version int `json:"x402Version"`
-	Accepts     []struct {
-		Scheme            string            `json:"scheme"`
-		Network           string            `json:"network"`
-		Amount            string            `json:"amount"`
-		Asset             string            `json:"asset"`
-		PayTo             string            `json:"payTo"`
-		MaxTimeoutSeconds int               `json:"maxTimeoutSeconds"`
-		Extra             map[string]string `json:"extra"`
-	} `json:"accepts"`
-	Resource *struct {
-		URL         string `json:"url"`
-		Description string `json:"description"`
-		MimeType    string `json:"mimeType"`
-	} `json:"resource"`
+	X402Version int              `json:"x402Version"`
+	Accepts     []x402AcceptOption `json:"accepts"`
+	Resource    *x402Resource    `json:"resource"`
 }
 
 // signPayment parses the X-Payment-Required header (x402 v2) and returns a signed X-Payment value.
@@ -192,7 +180,6 @@ func (c *BlockRunBaseClient) signPayment(paymentHeaderB64 string) (string, error
 		return "", fmt.Errorf("no private key set for BlockRun Base wallet")
 	}
 
-	// Decode base64 → JSON
 	decoded, err := base64.RawStdEncoding.DecodeString(paymentHeaderB64)
 	if err != nil {
 		decoded, err = base64.StdEncoding.DecodeString(paymentHeaderB64)
@@ -205,12 +192,34 @@ func (c *BlockRunBaseClient) signPayment(paymentHeaderB64 string) (string, error
 	if err := json.Unmarshal(decoded, &req); err != nil {
 		return "", fmt.Errorf("failed to parse x402 v2 payment header: %w", err)
 	}
-
 	if len(req.Accepts) == 0 {
 		return "", fmt.Errorf("no payment options in x402 response")
 	}
 
-	opt := req.Accepts[0]
+	senderAddr := crypto.PubkeyToAddress(c.privateKey.PublicKey).Hex()
+	return signX402Payment(c.privateKey, senderAddr, req.Accepts[0], req.Resource)
+}
+
+// x402AcceptOption is the payment option from x402 v2 header (extracted for shared signing).
+type x402AcceptOption struct {
+	Scheme            string            `json:"scheme"`
+	Network           string            `json:"network"`
+	Amount            string            `json:"amount"`
+	Asset             string            `json:"asset"`
+	PayTo             string            `json:"payTo"`
+	MaxTimeoutSeconds int               `json:"maxTimeoutSeconds"`
+	Extra             map[string]string `json:"extra"`
+}
+
+type x402Resource struct {
+	URL         string `json:"url"`
+	Description string `json:"description"`
+	MimeType    string `json:"mimeType"`
+}
+
+// signX402Payment is the shared EIP-712 signing logic for x402 v2 on Base USDC.
+// Used by both BlockRunBaseClient and Claw402Client.
+func signX402Payment(privateKey *ecdsa.PrivateKey, senderAddr string, opt x402AcceptOption, resource *x402Resource) (string, error) {
 	recipient := opt.PayTo
 	amount := opt.Amount
 	network := opt.Network
@@ -224,28 +233,22 @@ func (c *BlockRunBaseClient) signPayment(paymentHeaderB64 string) (string, error
 	resourceURL := ""
 	resourceDesc := ""
 	resourceMime := "application/json"
-	if req.Resource != nil {
-		resourceURL = req.Resource.URL
-		resourceDesc = req.Resource.Description
-		resourceMime = req.Resource.MimeType
+	if resource != nil {
+		resourceURL = resource.URL
+		resourceDesc = resource.Description
+		resourceMime = resource.MimeType
 	}
 
-	// Timestamps: validAfter = now-600 (clock skew), validBefore = now+maxTimeout
 	now := time.Now().Unix()
 	validAfter := now - 600
 	validBefore := now + int64(maxTimeout)
 
-	// Random nonce (bytes32)
 	nonceBytes := make([]byte, 32)
 	if _, err := rand.Read(nonceBytes); err != nil {
 		return "", fmt.Errorf("failed to generate nonce: %w", err)
 	}
 	nonce := "0x" + hex.EncodeToString(nonceBytes)
 
-	// Sender address
-	senderAddr := crypto.PubkeyToAddress(c.privateKey.PublicKey).Hex()
-
-	// Build EIP-712 domain separator
 	domainName := "USD Coin"
 	domainVersion := "2"
 	if extra != nil {
@@ -262,7 +265,6 @@ func (c *BlockRunBaseClient) signPayment(paymentHeaderB64 string) (string, error
 		return "", fmt.Errorf("failed to build domain separator: %w", err)
 	}
 
-	// Build struct hash
 	amountBig, err := parseBigInt(amount)
 	if err != nil {
 		return "", fmt.Errorf("invalid amount: %w", err)
@@ -273,26 +275,22 @@ func (c *BlockRunBaseClient) signPayment(paymentHeaderB64 string) (string, error
 		return "", fmt.Errorf("failed to build struct hash: %w", err)
 	}
 
-	// EIP-712 digest
 	digest := make([]byte, 0, 66)
 	digest = append(digest, 0x19, 0x01)
 	digest = append(digest, domainSeparator...)
 	digest = append(digest, structHash...)
 	hash := keccak256Bytes(digest)
 
-	// Sign with secp256k1
-	sig, err := crypto.Sign(hash, c.privateKey)
+	sig, err := crypto.Sign(hash, privateKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign: %w", err)
 	}
-	// Adjust V: go-ethereum returns 0/1, EIP-712 expects 27/28
 	if sig[64] < 27 {
 		sig[64] += 27
 	}
 
 	sigHex := "0x" + hex.EncodeToString(sig)
 
-	// Build x402 v2 payment payload
 	paymentData := map[string]interface{}{
 		"x402Version": 2,
 		"resource": map[string]string{

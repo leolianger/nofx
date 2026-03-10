@@ -674,6 +674,9 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 	case "blockrun-sol":
 		aiClient = mcp.NewBlockRunSolClient()
 		aiClient.SetAPIKey(apiKey, "", model.CustomModelName)
+	case "claw402":
+		aiClient = mcp.NewClaw402Client()
+		aiClient.SetAPIKey(apiKey, "", model.CustomModelName)
 	default:
 		// Use generic client
 		aiClient = mcp.NewClient()

@@ -92,6 +92,13 @@ func configureMCPClient(cfg BacktestConfig, base mcp.AIClient) (mcp.AIClient, er
 		brSol := mcp.NewBlockRunSolClient()
 		brSol.SetAPIKey(cfg.AICfg.APIKey, "", cfg.AICfg.Model)
 		return brSol, nil
+	case "claw402":
+		if cfg.AICfg.APIKey == "" {
+			return nil, fmt.Errorf("claw402 provider requires wallet private key")
+		}
+		claw := mcp.NewClaw402Client()
+		claw.SetAPIKey(cfg.AICfg.APIKey, "", cfg.AICfg.Model)
+		return claw, nil
 	case "custom":
 		if cfg.AICfg.BaseURL == "" || cfg.AICfg.APIKey == "" || cfg.AICfg.Model == "" {
 			return nil, fmt.Errorf("custom provider requires base_url, api key and model")
