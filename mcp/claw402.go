@@ -1,12 +1,7 @@
 package mcp
 
 import (
-	"bytes"
 	"crypto/ecdsa"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -46,9 +41,12 @@ var claw402ModelEndpoints = map[string]string{
 
 // Claw402Client implements AIClient using claw402.ai's x402 v2 USDC payment gateway.
 // Reuses the same EIP-712 signing as BlockRunBaseClient (same Base chain + USDC contract).
+// When the selected model routes to an Anthropic endpoint, it automatically uses
+// the Anthropic wire format for requests and responses (via an internal ClaudeClient).
 type Claw402Client struct {
 	*Client
-	privateKey *ecdsa.PrivateKey
+	privateKey  *ecdsa.PrivateKey
+	claudeProxy *ClaudeClient // non-nil when endpoint is /anthropic/
 }
 
 // NewClaw402Client creates a claw402 client (backward compatible).
@@ -90,7 +88,15 @@ func (c *Claw402Client) SetAPIKey(apiKey string, _ string, customModel string) {
 	}
 	endpoint := c.resolveEndpoint()
 	c.BaseURL = DefaultClaw402URL + endpoint
-	c.logger.Infof("🔧 [MCP] Claw402 model: %s → %s", c.Model, endpoint)
+
+	// Anthropic endpoints need different wire format (Messages API)
+	if strings.Contains(endpoint, "/anthropic/") {
+		c.claudeProxy = &ClaudeClient{Client: c.Client}
+		c.logger.Infof("🔧 [MCP] Claw402 model: %s → %s (Anthropic format)", c.Model, endpoint)
+	} else {
+		c.claudeProxy = nil
+		c.logger.Infof("🔧 [MCP] Claw402 model: %s → %s", c.Model, endpoint)
+	}
 }
 
 // resolveEndpoint returns the API path for the configured model.
@@ -105,113 +111,49 @@ func (c *Claw402Client) resolveEndpoint() string {
 	return claw402ModelEndpoints[DefaultClaw402Model]
 }
 
-func (c *Claw402Client) setAuthHeader(_ http.Header) {
-	// No Bearer token — payment is via x402 signing
-}
+func (c *Claw402Client) setAuthHeader(h http.Header) { x402SetAuthHeader(h) }
 
-// call handles the x402 v2 payment flow for claw402.ai.
 func (c *Claw402Client) call(systemPrompt, userPrompt string) (string, error) {
-	c.logger.Infof("📡 [Claw402] Request AI: %s", c.BaseURL)
-
-	requestBody := c.hooks.buildMCPRequestBody(systemPrompt, userPrompt)
-	jsonData, err := c.hooks.marshalRequestBody(requestBody)
-	if err != nil {
-		return "", err
-	}
-
-	url := c.hooks.buildUrl()
-	req, err := c.hooks.buildRequest(url, jsonData)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Handle x402 Payment Required
-	if resp.StatusCode == http.StatusPaymentRequired {
-		// Check both header variants
-		paymentHeader := resp.Header.Get("X-Payment-Required")
-		if paymentHeader == "" {
-			paymentHeader = resp.Header.Get("Payment-Required")
-		}
-		if paymentHeader == "" {
-			// Try reading payment details from response body
-			body, _ := io.ReadAll(resp.Body)
-			return "", fmt.Errorf("received 402 but no payment header found. Body: %s", string(body))
-		}
-
-		paymentSig, err := c.signPayment(paymentHeader)
-		if err != nil {
-			return "", fmt.Errorf("failed to sign x402 payment: %w", err)
-		}
-
-		req2, err := c.hooks.buildRequest(url, jsonData)
-		if err != nil {
-			return "", fmt.Errorf("failed to build retry request: %w", err)
-		}
-		// Send payment in both header variants for compatibility
-		req2.Header.Set("X-Payment", paymentSig)
-		req2.Header.Set("Payment-Signature", paymentSig)
-
-		resp2, err := c.httpClient.Do(req2)
-		if err != nil {
-			return "", fmt.Errorf("failed to send payment retry: %w", err)
-		}
-		defer resp2.Body.Close()
-
-		body2, err := io.ReadAll(resp2.Body)
-		if err != nil {
-			return "", fmt.Errorf("failed to read payment response: %w", err)
-		}
-		if resp2.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("Claw402 payment retry failed (status %d): %s", resp2.StatusCode, string(body2))
-		}
-		return c.hooks.parseMCPResponse(body2)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Claw402 API error (status %d): %s", resp.StatusCode, string(body))
-	}
-	return c.hooks.parseMCPResponse(body)
+	return x402Call(c.Client, c.signPayment, "Claw402", systemPrompt, userPrompt)
 }
 
-// signPayment reuses the same EIP-712 signing logic as BlockRunBaseClient
-// (same Base chain, same USDC contract, same TransferWithAuthorization).
+func (c *Claw402Client) CallWithRequestFull(req *Request) (*LLMResponse, error) {
+	return x402CallFull(c.Client, c.signPayment, "Claw402", req)
+}
+
+// signPayment signs x402 v2 EIP-712 payment (same Base chain + USDC as BlockRunBase).
 func (c *Claw402Client) signPayment(paymentHeaderB64 string) (string, error) {
-	if c.privateKey == nil {
-		return "", fmt.Errorf("no private key set for Claw402 wallet")
-	}
+	return signBasePaymentHeader(c.privateKey, paymentHeaderB64, "Claw402")
+}
 
-	// Decode base64 → JSON
-	decoded, err := base64.RawStdEncoding.DecodeString(paymentHeaderB64)
-	if err != nil {
-		decoded, err = base64.StdEncoding.DecodeString(paymentHeaderB64)
-		if err != nil {
-			return "", fmt.Errorf("failed to decode payment header: %w", err)
-		}
-	}
+// ── Format overrides for Anthropic endpoints ─────────────────────────────────
 
-	var req x402v2PaymentRequired
-	if err := json.Unmarshal(decoded, &req); err != nil {
-		return "", fmt.Errorf("failed to parse x402 v2 payment header: %w", err)
+func (c *Claw402Client) buildMCPRequestBody(systemPrompt, userPrompt string) map[string]any {
+	if c.claudeProxy != nil {
+		return c.claudeProxy.buildMCPRequestBody(systemPrompt, userPrompt)
 	}
-	if len(req.Accepts) == 0 {
-		return "", fmt.Errorf("no payment options in x402 response")
+	return c.Client.buildMCPRequestBody(systemPrompt, userPrompt)
+}
+
+func (c *Claw402Client) buildRequestBodyFromRequest(req *Request) map[string]any {
+	if c.claudeProxy != nil {
+		return c.claudeProxy.buildRequestBodyFromRequest(req)
 	}
+	return c.Client.buildRequestBodyFromRequest(req)
+}
 
-	// Reuse the same signing logic as BlockRunBaseClient — identical chain + USDC contract
-	opt := req.Accepts[0]
-	senderAddr := crypto.PubkeyToAddress(c.privateKey.PublicKey).Hex()
+func (c *Claw402Client) parseMCPResponse(body []byte) (string, error) {
+	if c.claudeProxy != nil {
+		return c.claudeProxy.parseMCPResponse(body)
+	}
+	return c.Client.parseMCPResponse(body)
+}
 
-	return signX402Payment(c.privateKey, senderAddr, opt, req.Resource)
+func (c *Claw402Client) parseMCPResponseFull(body []byte) (*LLMResponse, error) {
+	if c.claudeProxy != nil {
+		return c.claudeProxy.parseMCPResponseFull(body)
+	}
+	return c.Client.parseMCPResponseFull(body)
 }
 
 // buildUrl returns the full claw402 endpoint URL.
@@ -219,12 +161,6 @@ func (c *Claw402Client) buildUrl() string {
 	return c.BaseURL
 }
 
-// buildRequest creates the HTTP request without Authorization header.
 func (c *Claw402Client) buildRequest(url string, jsonData []byte) (*http.Request, error) {
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("fail to build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return req, nil
+	return x402BuildRequest(url, jsonData)
 }

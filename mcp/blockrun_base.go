@@ -1,14 +1,12 @@
 package mcp
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -97,124 +95,19 @@ func (c *BlockRunBaseClient) SetAPIKey(apiKey string, customURL string, customMo
 	}
 }
 
-func (c *BlockRunBaseClient) setAuthHeader(reqHeaders http.Header) {
-	// No Bearer token — payment is via x402 signing
-}
+func (c *BlockRunBaseClient) setAuthHeader(h http.Header) { x402SetAuthHeader(h) }
 
-// call overrides the base call to handle HTTP 402 x402 v2 payment flow.
 func (c *BlockRunBaseClient) call(systemPrompt, userPrompt string) (string, error) {
-	c.logger.Infof("📡 [BlockRun Base] Request AI Server: %s", c.BaseURL)
-
-	requestBody := c.hooks.buildMCPRequestBody(systemPrompt, userPrompt)
-	jsonData, err := c.hooks.marshalRequestBody(requestBody)
-	if err != nil {
-		return "", err
-	}
-
-	url := c.hooks.buildUrl()
-	req, err := c.hooks.buildRequest(url, jsonData)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Handle x402 v2 Payment Required
-	if resp.StatusCode == http.StatusPaymentRequired {
-		paymentHeader := resp.Header.Get("X-Payment-Required")
-		if paymentHeader == "" {
-			return "", fmt.Errorf("received 402 but no X-Payment-Required header")
-		}
-
-		paymentSig, err := c.signPayment(paymentHeader)
-		if err != nil {
-			return "", fmt.Errorf("failed to sign x402 payment: %w", err)
-		}
-
-		req2, err := c.hooks.buildRequest(url, jsonData)
-		if err != nil {
-			return "", fmt.Errorf("failed to build retry request: %w", err)
-		}
-		req2.Header.Set("X-Payment", paymentSig)
-
-		resp2, err := c.httpClient.Do(req2)
-		if err != nil {
-			return "", fmt.Errorf("failed to send payment retry: %w", err)
-		}
-		defer resp2.Body.Close()
-
-		body2, err := io.ReadAll(resp2.Body)
-		if err != nil {
-			return "", fmt.Errorf("failed to read payment retry response: %w", err)
-		}
-		if resp2.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("BlockRun payment retry failed (status %d): %s", resp2.StatusCode, string(body2))
-		}
-		return c.hooks.parseMCPResponse(body2)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("BlockRun API error (status %d): %s", resp.StatusCode, string(body))
-	}
-	return c.hooks.parseMCPResponse(body)
+	return x402Call(c.Client, c.signPayment, "BlockRun Base", systemPrompt, userPrompt)
 }
 
-// x402v2PaymentRequired is the structure of the X-Payment-Required header (x402 v2).
-type x402v2PaymentRequired struct {
-	X402Version int              `json:"x402Version"`
-	Accepts     []x402AcceptOption `json:"accepts"`
-	Resource    *x402Resource    `json:"resource"`
+func (c *BlockRunBaseClient) CallWithRequestFull(req *Request) (*LLMResponse, error) {
+	return x402CallFull(c.Client, c.signPayment, "BlockRun Base", req)
 }
 
-// signPayment parses the X-Payment-Required header (x402 v2) and returns a signed X-Payment value.
+// signPayment parses the Payment-Required header (x402 v2) and returns a signed payment value.
 func (c *BlockRunBaseClient) signPayment(paymentHeaderB64 string) (string, error) {
-	if c.privateKey == nil {
-		return "", fmt.Errorf("no private key set for BlockRun Base wallet")
-	}
-
-	decoded, err := base64.RawStdEncoding.DecodeString(paymentHeaderB64)
-	if err != nil {
-		decoded, err = base64.StdEncoding.DecodeString(paymentHeaderB64)
-		if err != nil {
-			return "", fmt.Errorf("failed to base64-decode payment header: %w", err)
-		}
-	}
-
-	var req x402v2PaymentRequired
-	if err := json.Unmarshal(decoded, &req); err != nil {
-		return "", fmt.Errorf("failed to parse x402 v2 payment header: %w", err)
-	}
-	if len(req.Accepts) == 0 {
-		return "", fmt.Errorf("no payment options in x402 response")
-	}
-
-	senderAddr := crypto.PubkeyToAddress(c.privateKey.PublicKey).Hex()
-	return signX402Payment(c.privateKey, senderAddr, req.Accepts[0], req.Resource)
-}
-
-// x402AcceptOption is the payment option from x402 v2 header (extracted for shared signing).
-type x402AcceptOption struct {
-	Scheme            string            `json:"scheme"`
-	Network           string            `json:"network"`
-	Amount            string            `json:"amount"`
-	Asset             string            `json:"asset"`
-	PayTo             string            `json:"payTo"`
-	MaxTimeoutSeconds int               `json:"maxTimeoutSeconds"`
-	Extra             map[string]string `json:"extra"`
-}
-
-type x402Resource struct {
-	URL         string `json:"url"`
-	Description string `json:"description"`
-	MimeType    string `json:"mimeType"`
+	return signBasePaymentHeader(c.privateKey, paymentHeaderB64, "BlockRun Base")
 }
 
 // signX402Payment is the shared EIP-712 signing logic for x402 v2 on Base USDC.
@@ -240,7 +133,7 @@ func signX402Payment(privateKey *ecdsa.PrivateKey, senderAddr string, opt x402Ac
 	}
 
 	now := time.Now().Unix()
-	validAfter := now - 600
+	validAfter := int64(0)
 	validBefore := now + int64(maxTimeout)
 
 	nonceBytes := make([]byte, 32)
@@ -417,10 +310,14 @@ func hexToBytes32(s string) ([]byte, error) {
 }
 
 func parseBigInt(s string) (*big.Int, error) {
-	s = strings.TrimPrefix(s, "0x")
 	n := new(big.Int)
-	if _, ok := n.SetString(s, 16); ok {
-		return n, nil
+	// Only treat as hex when explicitly prefixed with 0x/0X.
+	// x402 amounts are always decimal strings (e.g. "3000" = 0.003 USDC).
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		if _, ok := n.SetString(s[2:], 16); ok {
+			return n, nil
+		}
+		return nil, fmt.Errorf("cannot parse hex big.Int from %q", s)
 	}
 	if _, ok := n.SetString(s, 10); ok {
 		return n, nil
@@ -443,12 +340,6 @@ func (c *BlockRunBaseClient) buildUrl() string {
 	return DefaultBlockRunBaseURL + BlockRunChatEndpoint
 }
 
-// buildRequest creates the HTTP request without an Authorization header.
 func (c *BlockRunBaseClient) buildRequest(url string, jsonData []byte) (*http.Request, error) {
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("fail to build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return req, nil
+	return x402BuildRequest(url, jsonData)
 }
