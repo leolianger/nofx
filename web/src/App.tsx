@@ -11,6 +11,7 @@ import { SettingsPage } from './pages/SettingsPage'
 import { ResetPasswordPage } from './components/auth/ResetPasswordPage'
 import { CompetitionPage } from './components/trader/CompetitionPage'
 import { LandingPage } from './pages/LandingPage'
+import { AgentChatPage } from './pages/AgentChatPage'
 import { FAQPage } from './pages/FAQPage'
 import { StrategyStudioPage } from './pages/StrategyStudioPage'
 import { StrategyMarketPage } from './pages/StrategyMarketPage'
@@ -35,6 +36,7 @@ import type {
 } from './types'
 
 type Page =
+  | 'agent'
   | 'competition'
   | 'traders'
   | 'trader'
@@ -63,13 +65,14 @@ function App() {
     const path = window.location.pathname
     const hash = window.location.hash.slice(1) // 去掉 #
 
+    if (path === '/agent' || hash === 'agent') return 'agent'
     if (path === '/traders' || hash === 'traders') return 'traders'
     if (path === '/strategy' || hash === 'strategy') return 'strategy'
     if (path === '/strategy-market' || hash === 'strategy-market') return 'strategy-market'
     if (path === '/data' || hash === 'data') return 'data'
     if (path === '/dashboard' || hash === 'trader' || hash === 'details')
       return 'trader'
-    return 'competition' // 默认为竞赛页面
+    return 'agent' // 默认为 Agent 页面
   }
 
   // Login required overlay state
@@ -84,6 +87,7 @@ function App() {
   // Unified page navigation handler
   const navigateToPage = (page: Page) => {
     const pathMap: Record<Page, string> = {
+      'agent': '/agent',
       'competition': '/competition',
       'strategy-market': '/strategy-market',
       'data': '/data',
@@ -141,7 +145,9 @@ function App() {
       const params = new URLSearchParams(window.location.search)
       const traderParam = params.get('trader')
 
-      if (path === '/traders' || hash === 'traders') {
+      if (path === '/agent' || hash === 'agent') {
+        setCurrentPage('agent')
+      } else if (path === '/traders' || hash === 'traders') {
         setCurrentPage('traders')
       } else if (path === '/strategy' || hash === 'strategy') {
         setCurrentPage('strategy')
@@ -399,6 +405,7 @@ function App() {
   if (route === '/data') {
     const dataPageNavigate = (page: Page) => {
       const pathMap: Record<string, string> = {
+        'agent': '/agent',
         'data': '/data',
         'competition': '/competition',
         'strategy-market': '/strategy-market',
@@ -476,6 +483,8 @@ function App() {
           >
             {currentPage === 'competition' ? (
               <CompetitionPage />
+            ) : currentPage === 'agent' ? (
+              <AgentChatPage />
             ) : currentPage === 'data' ? (
               <DataPage />
             ) : currentPage === 'strategy-market' ? (

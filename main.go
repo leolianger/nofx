@@ -158,9 +158,9 @@ func main() {
 	nofxiAgent.Start()
 	defer nofxiAgent.Stop()
 
-	// Start NOFXi Agent Web API (port 8900)
+	// Register NOFXi Agent API on the main server's router
 	agentWeb := nofxiagent.NewWebHandler(nofxiAgent, slog.Default())
-	agentWeb.StartStandalone(8900)
+	server.RegisterAgentHandler(agentWeb)
 
 	logger.Info("🧠 NOFXi Agent started (sentinel + brain + scheduler + web:8900)")
 

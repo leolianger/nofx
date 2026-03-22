@@ -56,8 +56,8 @@ export const OFFICIAL_LINKS = {
 
 // Brand watermark component data
 export const BRAND_INFO = {
-  name: 'NOFX',
-  tagline: 'AI Trading Platform',
+  name: 'NOFXi',
+  tagline: 'AI Trading Agent',
   version: '1.0.0',
   // Links embedded in multiple formats for redundancy
   social: {

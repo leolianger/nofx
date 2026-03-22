@@ -3,7 +3,7 @@ export type Language = 'en' | 'zh' | 'id'
 export const translations = {
   en: {
     // Header
-    appTitle: 'NOFX',
+    appTitle: 'NOFXi',
     subtitle: 'Multi-AI Model Trading Platform',
     aiTraders: 'AI Traders',
     details: 'Details',
@@ -1348,7 +1348,7 @@ export const translations = {
   },
   zh: {
     // Header
-    appTitle: 'NOFX',
+    appTitle: 'NOFXi',
     subtitle: '多AI模型交易平台',
     aiTraders: 'AI交易员',
     details: '详情',
@@ -2633,7 +2633,7 @@ export const translations = {
   },
   id: {
     // Header
-    appTitle: 'NOFX',
+    appTitle: 'NOFXi',
     subtitle: 'Platform Trading Multi-AI',
     aiTraders: 'Trader AI',
     details: 'Detail',
