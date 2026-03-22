@@ -346,39 +346,40 @@ func (a *Agent) handleAnalyze(ctx context.Context, L string, intent Intent) (str
 		}
 	}
 
-	// Use NOFX's market data — full technical indicators
+	displayName := strings.TrimSuffix(symbol, "USDT")
+	header := fmt.Sprintf(a.msg(L, "analysis_header"), displayName)
+
+	// Try crypto market data first
 	md, err := market.Get(symbol)
-	if err != nil {
-		a.logger.Error("get market data", "symbol", symbol, "error", err)
-		// Not a crypto pair? Try to answer with AI or guidance
+	if err == nil {
+		// Got real data — AI + data = best analysis
+		prompt := buildAnalysisPrompt(symbol, md, L)
 		if a.aiClient != nil {
-			resp, err := a.aiClient.CallWithMessages(a.msg(L, "system_prompt"),
-				fmt.Sprintf("User asked to analyze: %s. Provide what you know.", strings.TrimSuffix(symbol, "USDT")))
-			if err == nil {
-				return fmt.Sprintf(a.msg(L, "analysis_header"), strings.TrimSuffix(symbol, "USDT")) + "\n\n" + resp, nil
+			if resp, aiErr := a.aiClient.CallWithMessages(a.msg(L, "system_prompt"), prompt); aiErr == nil && resp != "" {
+				return header + "\n\n" + resp, nil
 			}
 		}
-		if L == "zh" {
-			return fmt.Sprintf("🔍 *%s*\n\n⚠️ 这个标的暂不支持实时数据。我目前支持加密货币（BTC, ETH, SOL 等）的实时分析。\n\nA股分析功能正在开发中 🚧", strings.TrimSuffix(symbol, "USDT")), nil
-		}
-		return fmt.Sprintf("🔍 *%s*\n\n⚠️ Real-time data not available for this asset. Currently supporting crypto (BTC, ETH, SOL etc).\n\nStock analysis coming soon 🚧", strings.TrimSuffix(symbol, "USDT")), nil
+		return header + "\n\n" + market.Format(md), nil
 	}
 
-	// Build rich analysis prompt with real data
-	prompt := buildAnalysisPrompt(symbol, md, L)
-
-	// Use AI to analyze the real market data
+	// No crypto data — might be stock/forex. Let AI answer with its knowledge.
 	if a.aiClient != nil {
-		resp, err := a.aiClient.CallWithMessages(a.msg(L, "system_prompt"), prompt)
-		if err == nil && resp != "" {
-			return fmt.Sprintf(a.msg(L, "analysis_header"), strings.TrimSuffix(symbol, "USDT")) + "\n\n" + resp, nil
+		var prompt string
+		if L == "zh" {
+			prompt = fmt.Sprintf("用户想分析「%s」。请提供：\n1. 标的类型（A股/港股/美股/外汇/其他）\n2. 基本面分析\n3. 近期走势判断\n4. 关键价位和风险提示\n\n不确定的数据请诚实说明。简洁专业。", displayName)
+		} else {
+			prompt = fmt.Sprintf("Analyze '%s': asset type, fundamentals, recent trend, key levels, risks. Be honest about data freshness.", displayName)
 		}
-		a.logger.Error("AI analysis failed", "error", err)
+		if resp, aiErr := a.aiClient.CallWithMessages(a.msg(L, "system_prompt"), prompt); aiErr == nil && resp != "" {
+			return header + "\n\n" + resp, nil
+		}
 	}
 
-	// Fallback: format raw data directly
-	header := fmt.Sprintf(a.msg(L, "analysis_header"), strings.TrimSuffix(symbol, "USDT"))
-	return header + "\n\n" + market.Format(md), nil
+	// No AI, no data
+	if L == "zh" {
+		return header + "\n\n⚠️ 暂无实时数据，配置 AI 后（发送 *开始配置*）我可以分析任何标的——A股、港股、美股、外汇都行。", nil
+	}
+	return header + "\n\n⚠️ No real-time data. Configure AI (send *setup*) to analyze any asset — stocks, forex, crypto.", nil
 }
 
 func buildAnalysisPrompt(symbol string, md *market.Data, L string) string {
