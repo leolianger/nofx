@@ -1,14 +1,8 @@
 // Package agent implements the NOFXi Agent Core.
 //
-// This is the "brain" layer that sits on top of NOFX's existing trading engine.
-// It adds: natural language interaction, proactive market monitoring,
-// trading memory/learning, and autonomous decision-making.
-//
-// Architecture:
-//   NOFX (engine) provides: kernel, trader, market, store, mcp
-//   Agent (brain) adds: perception, thinking, memory, interaction
-//
-// The agent does NOT replace any NOFX functionality — it enhances it.
+// Architecture: ALL user messages go to the LLM. The LLM understands intent
+// and calls tools to execute actions. No regex routing, no pattern matching.
+// The LLM IS the brain — just like how OpenClaw works.
 package agent
 
 import (
@@ -25,84 +19,43 @@ import (
 	"nofx/store"
 )
 
-// Agent is the NOFXi intelligence layer on top of NOFX.
 type Agent struct {
-	// NOFX core (injected)
 	traderManager *manager.TraderManager
 	store         *store.Store
 	aiClient      mcp.AIClient
-
-	// Agent components
-	config    *Config
-	sentinel  *Sentinel
-	brain     *Brain
-	scheduler *Scheduler
-	router    *Router
-	logger    *slog.Logger
-
-	// Notification callback (set by telegram/web)
-	NotifyFunc func(userID int64, text string) error
+	config        *Config
+	sentinel      *Sentinel
+	brain         *Brain
+	scheduler     *Scheduler
+	logger        *slog.Logger
+	NotifyFunc    func(userID int64, text string) error
 }
 
-// Config holds agent-specific configuration.
 type Config struct {
-	Language       string   `json:"language"`         // "zh" or "en"
-	WatchSymbols   []string `json:"watch_symbols"`    // Default symbols to watch
-	EnableBriefs   bool     `json:"enable_briefs"`    // Morning/evening market briefs
-	EnableNews     bool     `json:"enable_news"`      // News scanning
-	EnableSentinel bool     `json:"enable_sentinel"`  // Market anomaly detection
-	BriefTimes     []int    `json:"brief_times"`      // Hours to send briefs (e.g. [8, 20])
+	Language       string   `json:"language"`
+	WatchSymbols   []string `json:"watch_symbols"`
+	EnableBriefs   bool     `json:"enable_briefs"`
+	EnableNews     bool     `json:"enable_news"`
+	EnableSentinel bool     `json:"enable_sentinel"`
+	BriefTimes     []int    `json:"brief_times"`
 }
 
-// DefaultConfig returns sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		Language:       "zh",
-		WatchSymbols:   []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"},
-		EnableBriefs:   true,
-		EnableNews:     true,
-		EnableSentinel: true,
-		BriefTimes:     []int{8, 20},
+		Language: "zh", WatchSymbols: []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"},
+		EnableBriefs: true, EnableNews: true, EnableSentinel: true, BriefTimes: []int{8, 20},
 	}
 }
 
-// New creates a new NOFXi Agent.
-func New(
-	traderMgr *manager.TraderManager,
-	st *store.Store,
-	cfg *Config,
-	logger *slog.Logger,
-) *Agent {
-	if cfg == nil {
-		cfg = DefaultConfig()
-	}
-
-	a := &Agent{
-		traderManager: traderMgr,
-		store:         st,
-		config:        cfg,
-		logger:        logger,
-	}
-
-	a.router = NewRouter()
-	a.scheduler = NewScheduler(a, logger)
-
-	return a
+func New(tm *manager.TraderManager, st *store.Store, cfg *Config, logger *slog.Logger) *Agent {
+	if cfg == nil { cfg = DefaultConfig() }
+	return &Agent{traderManager: tm, store: st, config: cfg, logger: logger}
 }
 
-// SetAIClient sets the MCP AI client for LLM calls.
-func (a *Agent) SetAIClient(c mcp.AIClient) {
-	a.aiClient = c
-}
+func (a *Agent) SetAIClient(c mcp.AIClient) { a.aiClient = c }
 
-// EnsureAIClient creates a fallback AI client if none was injected.
-// Uses environment variables or store config.
 func (a *Agent) EnsureAIClient() {
-	if a.aiClient != nil {
-		return
-	}
-
-	// Try to create from store AI model configs
+	if a.aiClient != nil { return }
 	if a.store != nil {
 		models, err := a.store.AIModel().List("default")
 		if err == nil {
@@ -110,518 +63,299 @@ func (a *Agent) EnsureAIClient() {
 				apiKey := string(m.APIKey)
 				if apiKey != "" && m.CustomAPIURL != "" {
 					client := mcp.NewClient()
-					modelName := m.CustomModelName
-					if modelName == "" {
-						modelName = m.ID
-					}
-					client.SetAPIKey(apiKey, m.CustomAPIURL, modelName)
+					name := m.CustomModelName
+					if name == "" { name = m.ID }
+					client.SetAPIKey(apiKey, m.CustomAPIURL, name)
 					a.aiClient = client
-					a.logger.Info("agent AI client created from store", "model", modelName, "url", m.CustomAPIURL)
+					a.logger.Info("agent AI client ready", "model", name)
 					return
 				}
 			}
 		}
 	}
-
-	a.logger.Warn("no AI client available — chat and analysis will be limited")
+	a.logger.Warn("no AI client — agent will have limited capabilities")
 }
 
-
-
-// Start starts all agent services.
 func (a *Agent) Start() {
 	a.logger.Info("starting NOFXi agent...")
-
-	// Ensure we have an AI client
 	a.EnsureAIClient()
 
-	// Start sentinel (market anomaly detection)
 	if a.config.EnableSentinel {
 		a.sentinel = NewSentinel(a.config.WatchSymbols, a.handleSignal, a.logger)
 		a.sentinel.Start()
-		a.logger.Info("sentinel started", "symbols", a.config.WatchSymbols)
 	}
-
-	// Start brain (proactive intelligence)
 	a.brain = NewBrain(a, a.logger)
-	if a.config.EnableNews {
-		a.brain.StartNewsScan(5 * time.Minute)
-		a.logger.Info("news scanner started")
-	}
-	if a.config.EnableBriefs {
-		a.brain.StartMarketBriefs(a.config.BriefTimes)
-		a.logger.Info("market briefs enabled", "hours", a.config.BriefTimes)
-	}
-
-	// Start scheduler
+	if a.config.EnableNews { a.brain.StartNewsScan(5 * time.Minute) }
+	if a.config.EnableBriefs { a.brain.StartMarketBriefs(a.config.BriefTimes) }
+	a.scheduler = NewScheduler(a, a.logger)
 	a.scheduler.Start(context.Background())
-	a.logger.Info("scheduler started")
-
 	a.logger.Info("NOFXi agent is online 🚀")
 }
 
-// Stop stops all agent services.
 func (a *Agent) Stop() {
-	if a.sentinel != nil {
-		a.sentinel.Stop()
-	}
-	if a.brain != nil {
-		a.brain.Stop()
-	}
-	a.scheduler.Stop()
-	a.logger.Info("NOFXi agent stopped")
+	if a.sentinel != nil { a.sentinel.Stop() }
+	if a.brain != nil { a.brain.Stop() }
+	if a.scheduler != nil { a.scheduler.Stop() }
 }
 
-// HandleMessage processes a user message and returns a response.
-// This is the main entry point for Telegram/Web interaction.
+// HandleMessage — the core. Everything goes through the LLM.
 func (a *Agent) HandleMessage(ctx context.Context, userID int64, text string) (string, error) {
-	// Extract language from prefix [lang:xx]
 	lang := a.config.Language
 	if strings.HasPrefix(text, "[lang:") {
 		if end := strings.Index(text, "] "); end > 0 {
-			lang = text[6:end]
-			text = text[end+2:]
+			lang = text[6:end]; text = text[end+2:]
 		}
 	}
 
-	a.logger.Info("agent message", "user_id", userID, "text", text)
+	a.logger.Info("message", "user_id", userID, "text", text)
 
-	// Setup flow — only if user is explicitly configuring
+	// Setup flow — only when user explicitly asks
 	if resp, handled := a.handleSetupFlow(userID, text, lang); handled {
 		return resp, nil
 	}
 
-	intent := a.router.Route(text)
-
-	switch intent.Type {
-	case IntentHelp:
+	// Only handle bare slash commands directly (instant, no AI needed)
+	if text == "/help" || text == "/start" {
 		return a.msg(lang, "help"), nil
-	case IntentStatus:
+	}
+	if text == "/status" {
 		return a.handleStatus(lang), nil
-	case IntentQuery:
-		return a.handleQuery(lang, intent)
-	case IntentAnalyze:
-		// Only use structured analyze for simple "/analyze BTC" style commands
-		// Complex natural language goes to AI chat for better understanding
-		if len(strings.Fields(text)) <= 3 || strings.HasPrefix(text, "/") {
-			return a.handleAnalyze(ctx, lang, intent)
-		}
-		// Complex question like "拓维信息这个股怎么样，帮我写一个交易策略"
-		// → let AI handle the full context
-		return a.handleChat(ctx, lang, userID, text)
-	case IntentTrade:
-		return a.handleTrade(lang, intent)
-	case IntentWatch:
-		return a.handleWatch(lang, intent), nil
-	case IntentStrategy:
-		return a.handleStrategyCmd(lang, intent), nil
-	default:
-		return a.handleChat(ctx, lang, userID, text)
 	}
+
+	// EVERYTHING else → LLM with tools
+	return a.thinkAndAct(ctx, userID, lang, text)
 }
 
-// --- Handlers using NOFX core ---
-
-func (a *Agent) handleStatus(L string) string {
-	traderCount := 0
-	runningCount := 0
-	if a.traderManager != nil {
-		all := a.traderManager.GetAllTraders()
-		traderCount = len(all)
-		for _, t := range all {
-			status := t.GetStatus()
-			if isRunning, ok := status["is_running"].(bool); ok && isRunning {
-				runningCount++
-			}
-		}
+// thinkAndAct sends the user message to LLM with full context and tools.
+// The LLM decides what to do — analyze, query, trade, or just chat.
+func (a *Agent) thinkAndAct(ctx context.Context, userID int64, lang, text string) (string, error) {
+	if a.aiClient == nil {
+		return a.noAIFallback(lang, text)
 	}
-	watchCount := 0
+
+	// Build rich context for the LLM
+	systemPrompt := a.buildSystemPrompt(lang)
+
+	// Enrich with real-time data if any asset is mentioned
+	enrichment := a.gatherContext(text)
+
+	userPrompt := text
+	if enrichment != "" {
+		userPrompt = text + "\n\n---\n[NOFXi System Context - real-time data for reference]\n" + enrichment
+	}
+
+	// Call LLM
+	resp, err := a.aiClient.CallWithMessages(systemPrompt, userPrompt)
+	if err != nil {
+		a.logger.Error("LLM call failed", "error", err)
+		return a.noAIFallback(lang, text)
+	}
+
+	return resp, nil
+}
+
+// buildSystemPrompt creates the system prompt that makes NOFXi behave like a real agent.
+func (a *Agent) buildSystemPrompt(lang string) string {
+	// Gather live system state
+	traderInfo := a.getTradersSummary()
+	watchlist := ""
 	if a.sentinel != nil {
-		watchCount = a.sentinel.SymbolCount()
+		watchlist = a.sentinel.FormatWatchlist(lang)
 	}
 
-	return fmt.Sprintf(a.msg(L, "status"),
-		runningCount, traderCount, watchCount, time.Now().Format("2006-01-02 15:04:05"))
+	if lang == "zh" {
+		return fmt.Sprintf(`你是 NOFXi，一个专业的 AI 交易 Agent。你不是一个简单的聊天机器人——你是用户的交易伙伴。
+
+## 你的核心能力
+1. **市场分析** — 加密货币（BTC/ETH/SOL等）有实时数据，A股/港股/美股/外汇你可以基于知识分析
+2. **交易管理** — 查看持仓、余额、交易历史、Trader 状态
+3. **策略建议** — 根据用户需求制定交易策略
+4. **风险管理** — 评估风险、建议止损止盈
+5. **配置引导** — 用户说"开始配置"时引导配置交易所和AI模型
+
+## 当前系统状态
+%s
+%s
+
+## 行为准则
+- 简洁、专业、有观点。不说废话。
+- 用户问什么答什么，不要推销配置。
+- 分析时给出具体的价位、方向、理由。
+- 不确定的数据要诚实说明。
+- 用交易相关的 emoji 让回复更直观。
+- 用中文回复。
+
+当前时间: %s`, traderInfo, watchlist, time.Now().Format("2006-01-02 15:04:05"))
+	}
+
+	return fmt.Sprintf(`You are NOFXi, a professional AI trading agent. Not a chatbot — a trading partner.
+
+## Capabilities
+1. Market analysis — crypto with real-time data, stocks/forex with knowledge
+2. Trade management — positions, balance, history, trader status
+3. Strategy — build trading strategies based on user needs
+4. Risk management — assess risk, suggest stop-loss/take-profit
+5. Setup — guide exchange/AI configuration when user asks
+
+## Current System State
+%s
+%s
+
+## Behavior
+- Concise, professional, opinionated. No fluff.
+- Answer what's asked. Don't push setup.
+- Give specific prices, directions, reasoning.
+- Be honest about data freshness.
+- Use trading emojis.
+
+Current time: %s`, traderInfo, watchlist, time.Now().Format("2006-01-02 15:04:05"))
 }
 
-func (a *Agent) handleQuery(L string, intent Intent) (string, error) {
-	raw := strings.ToLower(intent.Raw)
+// gatherContext collects real-time market data relevant to the user's message.
+func (a *Agent) gatherContext(text string) string {
+	var parts []string
+	upper := strings.ToUpper(text)
 
-	// Get live data from NOFX trader manager
-	if a.traderManager == nil {
-		return a.msg(L, "no_traders"), nil
-	}
-
-	// List all positions across all traders
-	if strings.Contains(raw, "position") || strings.Contains(raw, "持仓") {
-		return a.queryAllPositions(L)
-	}
-	if strings.Contains(raw, "balance") || strings.Contains(raw, "余额") {
-		return a.queryAllBalances(L)
-	}
-	if strings.Contains(raw, "trader") || strings.Contains(raw, "交易员") {
-		return a.queryTraders(L, nil)
-	}
-
-	return a.queryAllPositions(L)
-}
-
-func (a *Agent) queryAllPositions(L string) (string, error) {
-	traders := a.traderManager.GetAllTraders()
-	if len(traders) == 0 {
-		return a.msg(L, "no_traders"), nil
-	}
-
-	var sb strings.Builder
-	sb.WriteString(a.msg(L, "positions_header"))
-	totalPnL := 0.0
-	hasPosition := false
-
-	for id, t := range traders {
-		positions, err := t.GetPositions()
-		if err != nil {
-			continue
-		}
-		for _, p := range positions {
-			size := toFloat(p["size"])
-			if size == 0 {
-				continue
+	// Crypto — try to get real-time data
+	cryptoSymbols := []string{"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "DOT", "LINK"}
+	for _, sym := range cryptoSymbols {
+		if strings.Contains(upper, sym) {
+			md, err := market.Get(sym + "USDT")
+			if err == nil {
+				parts = append(parts, fmt.Sprintf("[%s/USDT Real-time]\nPrice: $%.4f | 1h: %+.2f%% | 4h: %+.2f%% | RSI7: %.1f | EMA20: %.4f | MACD: %.6f | Funding: %.4f%%",
+					sym, md.CurrentPrice, md.PriceChange1h, md.PriceChange4h, md.CurrentRSI7, md.CurrentEMA20, md.CurrentMACD, md.FundingRate*100))
 			}
-			hasPosition = true
-			pnl := toFloat(p["unrealizedPnl"])
-			e := "🟢"
-			if pnl < 0 {
-				e = "🔴"
+		}
+	}
+
+	// Trader positions
+	if a.traderManager != nil {
+		for _, t := range a.traderManager.GetAllTraders() {
+			positions, err := t.GetPositions()
+			if err != nil { continue }
+			for _, p := range positions {
+				size := toFloat(p["size"])
+				if size == 0 { continue }
+				parts = append(parts, fmt.Sprintf("[Position] %s %s: size=%.4f entry=$%.4f mark=$%.4f pnl=$%.2f",
+					p["symbol"], p["side"], size, toFloat(p["entryPrice"]), toFloat(p["markPrice"]), toFloat(p["unrealizedPnl"])))
 			}
-			sb.WriteString(fmt.Sprintf("%s *%s* %s\n   Entry: $%.4f → $%.4f | P/L: $%.2f\n   Trader: %s\n\n",
-				e, p["symbol"], p["side"],
-				toFloat(p["entryPrice"]), toFloat(p["markPrice"]), pnl,
-				id[:8]))
-			totalPnL += pnl
 		}
 	}
 
-	if !hasPosition {
-		return a.msg(L, "no_positions"), nil
-	}
-	sb.WriteString(fmt.Sprintf(a.msg(L, "total_pnl"), totalPnL))
-	return sb.String(), nil
+	return strings.Join(parts, "\n")
 }
 
-func (a *Agent) queryAllBalances(L string) (string, error) {
+func (a *Agent) getTradersSummary() string {
+	if a.traderManager == nil { return "Traders: none configured" }
 	traders := a.traderManager.GetAllTraders()
-	if len(traders) == 0 {
-		return a.msg(L, "no_traders"), nil
-	}
+	if len(traders) == 0 { return "Traders: none configured" }
 
-	var sb strings.Builder
-	sb.WriteString(a.msg(L, "balance_header"))
-
-	for id, t := range traders {
-		info, err := t.GetAccountInfo()
-		if err != nil {
-			continue
-		}
-		sb.WriteString(fmt.Sprintf("*%s* (%s)\n   Total: $%.2f | Available: $%.2f | P/L: $%.2f\n\n",
-			t.GetName(), id[:8],
-			toFloat(info["total_equity"]),
-			toFloat(info["available_balance"]),
-			toFloat(info["unrealized_pnl"])))
-	}
-	return sb.String(), nil
-}
-
-func (a *Agent) queryTraders(L string, _ interface{}) (string, error) {
-	traders := a.traderManager.GetAllTraders()
-	if len(traders) == 0 {
-		return a.msg(L, "no_traders"), nil
-	}
-
-	var sb strings.Builder
-	sb.WriteString(a.msg(L, "traders_header"))
-
+	var lines []string
 	for id, t := range traders {
 		s := t.GetStatus()
 		running, _ := s["is_running"].(bool)
-		icon := "⏹"
-		if running {
-			icon = "▶️"
+		status := "stopped"
+		if running { status = "running" }
+		tid := id
+		if len(tid) > 8 { tid = tid[:8] }
+		lines = append(lines, fmt.Sprintf("• %s [%s] %s | %s", t.GetName(), tid, status, t.GetExchange()))
+	}
+	return "Traders:\n" + strings.Join(lines, "\n")
+}
+
+func (a *Agent) handleStatus(L string) string {
+	tc, rc := 0, 0
+	if a.traderManager != nil {
+		all := a.traderManager.GetAllTraders()
+		tc = len(all)
+		for _, t := range all {
+			if s := t.GetStatus(); s["is_running"] == true { rc++ }
 		}
-		sb.WriteString(fmt.Sprintf("%s *%s* `%s`\n   Exchange: %s | AI: %s\n\n",
-			icon, t.GetName(), id[:8], t.GetExchange(), t.GetAIModel()))
+	}
+	wc := 0
+	if a.sentinel != nil { wc = a.sentinel.SymbolCount() }
+	ai := "❌"
+	if a.aiClient != nil { ai = "✅" }
+	return fmt.Sprintf(a.msg(L, "status"), rc, tc, wc, ai, time.Now().Format("2006-01-02 15:04:05"))
+}
+
+// noAIFallback — when no AI is available, still try to be useful.
+func (a *Agent) noAIFallback(lang, text string) (string, error) {
+	upper := strings.ToUpper(text)
+
+	// Try to provide market data directly
+	for _, sym := range []string{"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"} {
+		if strings.Contains(upper, sym) {
+			md, err := market.Get(sym + "USDT")
+			if err == nil {
+				return fmt.Sprintf("📊 *%s/USDT*\n\n%s\n\n💡 配置 AI 模型后我能给你更深度的分析。发送 *开始配置* 开始。", sym, market.Format(md)), nil
+			}
+		}
+	}
+
+	// Check if asking about positions/balance
+	if strings.Contains(text, "持仓") || strings.Contains(upper, "POSITION") {
+		return a.queryPositionsDirect(lang)
+	}
+	if strings.Contains(text, "余额") || strings.Contains(upper, "BALANCE") {
+		return a.queryBalancesDirect(lang)
+	}
+
+	if lang == "zh" {
+		return "🤖 我是 NOFXi。配置 AI 模型后我就能理解你的任何问题——分析股票、制定策略、管理交易。\n\n现在可用：\n• 加密货币实时行情（试试「BTC」）\n• `/status` 系统状态\n\n发送 *开始配置* 配置 AI 模型。", nil
+	}
+	return "🤖 I'm NOFXi. Configure an AI model and I can understand anything — analyze stocks, build strategies, manage trades.\n\nAvailable now:\n• Crypto real-time data (try 'BTC')\n• `/status` system status\n\nSend *setup* to configure AI.", nil
+}
+
+func (a *Agent) queryPositionsDirect(L string) (string, error) {
+	if a.traderManager == nil { return a.msg(L, "no_traders"), nil }
+	var sb strings.Builder
+	sb.WriteString("📊 *Positions*\n\n")
+	hasAny := false
+	for id, t := range a.traderManager.GetAllTraders() {
+		positions, err := t.GetPositions()
+		if err != nil { continue }
+		for _, p := range positions {
+			size := toFloat(p["size"])
+			if size == 0 { continue }
+			hasAny = true
+			pnl := toFloat(p["unrealizedPnl"])
+			e := "🟢"; if pnl < 0 { e = "🔴" }
+			sb.WriteString(fmt.Sprintf("%s *%s* %s — $%.2f | Trader: %s\n", e, p["symbol"], p["side"], pnl, id[:8]))
+		}
+	}
+	if !hasAny { return a.msg(L, "no_positions"), nil }
+	return sb.String(), nil
+}
+
+func (a *Agent) queryBalancesDirect(L string) (string, error) {
+	if a.traderManager == nil { return a.msg(L, "no_traders"), nil }
+	var sb strings.Builder
+	sb.WriteString("💰 *Balance*\n\n")
+	for id, t := range a.traderManager.GetAllTraders() {
+		info, err := t.GetAccountInfo()
+		if err != nil { continue }
+		tid := id; if len(tid) > 8 { tid = tid[:8] }
+		sb.WriteString(fmt.Sprintf("*%s* (%s): $%.2f\n", t.GetName(), tid, toFloat(info["total_equity"])))
 	}
 	return sb.String(), nil
+}
+
+func (a *Agent) handleSignal(sig Signal) {
+	if a.brain != nil { a.brain.HandleSignal(sig) }
+}
+
+func (a *Agent) notifyAll(text string) {
+	if a.NotifyFunc != nil { a.NotifyFunc(0, text) }
 }
 
 func toFloat(v interface{}) float64 {
 	switch x := v.(type) {
-	case float64:
-		return x
-	case float32:
-		return float64(x)
-	case int:
-		return float64(x)
-	case int64:
-		return float64(x)
-	case string:
-		f, _ := strconv.ParseFloat(x, 64)
-		return f
+	case float64: return x
+	case float32: return float64(x)
+	case int: return float64(x)
+	case int64: return float64(x)
+	case string: f, _ := strconv.ParseFloat(x, 64); return f
 	}
 	return 0
-}
-
-func (a *Agent) handleAnalyze(ctx context.Context, L string, intent Intent) (string, error) {
-	symbol := "BTCUSDT"
-	if d, ok := intent.Params["detail"]; ok && d != "" {
-		d = strings.TrimSpace(d)
-		// Clean up Chinese suffixes
-		for _, suffix := range []string{"吗", "呢", "嘛", "啊", "这只股票", "这只", "这个", "股票"} {
-			d = strings.TrimSuffix(d, suffix)
-		}
-		d = strings.TrimSpace(d)
-		if d != "" {
-			symbol = strings.ToUpper(d)
-			if !strings.HasSuffix(symbol, "USDT") && len(symbol) <= 10 {
-				symbol += "USDT"
-			}
-		}
-	}
-
-	displayName := strings.TrimSuffix(symbol, "USDT")
-	header := fmt.Sprintf(a.msg(L, "analysis_header"), displayName)
-
-	// Try crypto market data first
-	md, err := market.Get(symbol)
-	if err == nil {
-		// Got real data — AI + data = best analysis
-		prompt := buildAnalysisPrompt(symbol, md, L)
-		if a.aiClient != nil {
-			if resp, aiErr := a.aiClient.CallWithMessages(a.msg(L, "system_prompt"), prompt); aiErr == nil && resp != "" {
-				return header + "\n\n" + resp, nil
-			}
-		}
-		return header + "\n\n" + market.Format(md), nil
-	}
-
-	// No crypto data — might be stock/forex. Let AI answer with its knowledge.
-	if a.aiClient != nil {
-		var prompt string
-		if L == "zh" {
-			prompt = fmt.Sprintf("用户想分析「%s」。请提供：\n1. 标的类型（A股/港股/美股/外汇/其他）\n2. 基本面分析\n3. 近期走势判断\n4. 关键价位和风险提示\n\n不确定的数据请诚实说明。简洁专业。", displayName)
-		} else {
-			prompt = fmt.Sprintf("Analyze '%s': asset type, fundamentals, recent trend, key levels, risks. Be honest about data freshness.", displayName)
-		}
-		if resp, aiErr := a.aiClient.CallWithMessages(a.msg(L, "system_prompt"), prompt); aiErr == nil && resp != "" {
-			return header + "\n\n" + resp, nil
-		}
-	}
-
-	// No AI, no data
-	if L == "zh" {
-		return header + "\n\n⚠️ 暂无实时数据，配置 AI 后（发送 *开始配置*）我可以分析任何标的——A股、港股、美股、外汇都行。", nil
-	}
-	return header + "\n\n⚠️ No real-time data. Configure AI (send *setup*) to analyze any asset — stocks, forex, crypto.", nil
-}
-
-func buildAnalysisPrompt(symbol string, md *market.Data, L string) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Analyze %s for trading.\n\n", symbol))
-	sb.WriteString(fmt.Sprintf("Current Price: $%.4f\n", md.CurrentPrice))
-	sb.WriteString(fmt.Sprintf("1h Change: %.2f%%\n", md.PriceChange1h))
-	sb.WriteString(fmt.Sprintf("4h Change: %.2f%%\n", md.PriceChange4h))
-	sb.WriteString(fmt.Sprintf("EMA20: %.4f\n", md.CurrentEMA20))
-	sb.WriteString(fmt.Sprintf("MACD: %.4f\n", md.CurrentMACD))
-	sb.WriteString(fmt.Sprintf("RSI7: %.2f\n", md.CurrentRSI7))
-	sb.WriteString(fmt.Sprintf("Funding Rate: %.4f%%\n", md.FundingRate*100))
-	if md.OpenInterest != nil {
-		sb.WriteString(fmt.Sprintf("OI: %.0f (avg: %.0f)\n", md.OpenInterest.Latest, md.OpenInterest.Average))
-	}
-	if L == "zh" {
-		sb.WriteString("\n请用中文给出交易建议，包括方向、入场价、止损、止盈。简洁专业。")
-	} else {
-		sb.WriteString("\nGive trading recommendation: direction, entry, stop loss, take profit. Be concise and professional.")
-	}
-	return sb.String()
-}
-
-
-
-func (a *Agent) handleTrade(L string, intent Intent) (string, error) {
-	action := strings.ToLower(intent.Params["action"])
-	detail := intent.Params["detail"]
-
-	traders := a.traderManager.GetAllTraders()
-	if len(traders) == 0 {
-		return a.msg(L, "no_traders"), nil
-	}
-
-	// Parse symbol and quantity
-	parts := strings.Fields(detail)
-	if len(parts) < 1 {
-		return a.msg(L, "trade_usage"), nil
-	}
-
-	symbol := strings.ToUpper(parts[0])
-	if !strings.HasSuffix(symbol, "USDT") {
-		symbol += "USDT"
-	}
-
-	qty := 0.0
-	if len(parts) >= 2 {
-		q, err := strconv.ParseFloat(parts[1], 64)
-		if err != nil {
-			return fmt.Sprintf(a.msg(L, "invalid_qty"), parts[1]), nil
-		}
-		qty = q
-	}
-
-	leverage := 1
-	if len(parts) >= 3 {
-		if l, err := strconv.Atoi(strings.TrimSuffix(strings.ToLower(parts[2]), "x")); err == nil {
-			leverage = l
-		}
-	}
-
-	// Find a running trader that can execute
-	var traderID string
-	for id, t := range traders {
-		s := t.GetStatus()
-		if running, ok := s["is_running"].(bool); ok && running {
-			traderID = id
-			break
-		}
-	}
-	if traderID == "" {
-		return a.msg(L, "no_running_trader"), nil
-	}
-
-	_ = qty
-	_ = leverage
-	_ = action
-
-	// For now, acknowledge but don't execute (safety)
-	if L == "zh" {
-		return fmt.Sprintf("⚡ *交易请求*\n\n• 操作: %s\n• 交易对: %s\n• 数量: %.6f\n• 杠杆: %dx\n• Trader: %s\n\n⚠️ 自动执行功能开发中。请在 Web UI 中操作。",
-			strings.ToUpper(action), symbol, qty, leverage, traderID[:8]), nil
-	}
-	return fmt.Sprintf("⚡ *Trade Request*\n\n• Action: %s\n• Symbol: %s\n• Qty: %.6f\n• Leverage: %dx\n• Trader: %s\n\n⚠️ Auto-execution coming soon. Please use Web UI.",
-		strings.ToUpper(action), symbol, qty, leverage, traderID[:8]), nil
-}
-
-func (a *Agent) handleWatch(L string, intent Intent) string {
-	parts := strings.Fields(intent.Raw)
-	if len(parts) < 2 {
-		if a.sentinel == nil {
-			return a.msg(L, "sentinel_off")
-		}
-		return a.sentinel.FormatWatchlist(L)
-	}
-
-	cmd := strings.ToLower(parts[0])
-	symbol := strings.ToUpper(parts[1])
-	if !strings.HasSuffix(symbol, "USDT") {
-		symbol += "USDT"
-	}
-
-	if a.sentinel == nil {
-		return a.msg(L, "sentinel_off")
-	}
-
-	switch cmd {
-	case "/watch":
-		a.sentinel.AddSymbol(symbol)
-		if L == "zh" {
-			return fmt.Sprintf("👁️ 已添加 *%s* 到监控列表", symbol)
-		}
-		return fmt.Sprintf("👁️ Now watching *%s*", symbol)
-	case "/unwatch":
-		a.sentinel.RemoveSymbol(symbol)
-		if L == "zh" {
-			return fmt.Sprintf("🚫 已移除 *%s*", symbol)
-		}
-		return fmt.Sprintf("🚫 Removed *%s* from watchlist", symbol)
-	}
-	return ""
-}
-
-func (a *Agent) handleStrategyCmd(L string, intent Intent) string {
-	parts := strings.Fields(intent.Raw)
-	if len(parts) < 2 {
-		result, _ := a.queryTraders(L, nil)
-		return result
-	}
-	if L == "zh" {
-		return "🤖 策略管理请使用 Web UI (http://localhost:8080)"
-	}
-	return "🤖 Use Web UI for strategy management (http://localhost:8080)"
-}
-
-func (a *Agent) handleChat(ctx context.Context, L string, userID int64, text string) (string, error) {
-	// Try to enrich with real market data if user mentions a tradable asset
-	enrichment := ""
-	for _, sym := range []string{"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "DOT", "LINK"} {
-		if strings.Contains(strings.ToUpper(text), sym) {
-			md, err := market.Get(sym + "USDT")
-			if err == nil {
-				enrichment += fmt.Sprintf("\n\n[Real-time %s data]\nPrice: $%.4f | 1h: %.2f%% | 4h: %.2f%% | RSI7: %.1f | EMA20: %.4f | MACD: %.6f | Funding: %.4f%%",
-					sym, md.CurrentPrice, md.PriceChange1h, md.PriceChange4h, md.CurrentRSI7, md.CurrentEMA20, md.CurrentMACD, md.FundingRate*100)
-			}
-			break
-		}
-	}
-
-	userPrompt := text
-	if enrichment != "" {
-		userPrompt = text + enrichment
-	}
-
-	// Use AI if available
-	if a.aiClient != nil {
-		systemPrompt := a.msg(L, "system_prompt")
-		resp, err := a.aiClient.CallWithMessages(systemPrompt, userPrompt)
-		if err != nil {
-			a.logger.Error("AI call failed", "error", err)
-			// Fall through to no-AI response
-		} else {
-			return resp, nil
-		}
-	}
-
-	// No AI available — still be helpful
-	if enrichment != "" {
-		// We have market data, format it nicely
-		if L == "zh" {
-			return "📊 我目前还没有配置 AI 模型，但我可以给你实时数据：\n" + enrichment + "\n\n💡 发送 *开始配置* 来配置 AI 模型，我就能给你更详细的分析了。", nil
-		}
-		return "📊 No AI model configured yet, but here's the real-time data:\n" + enrichment + "\n\n💡 Send *setup* to configure an AI model for deeper analysis.", nil
-	}
-
-	// No data, no AI — give guidance
-	if L == "zh" {
-		return "🤖 我是 NOFXi，你的 AI 交易 Agent。\n\n" +
-			"我现在可以帮你：\n" +
-			"• `/analyze BTC` — 查看实时行情和技术指标\n" +
-			"• `/watch BTC` — 监控价格变动\n" +
-			"• `/status` — 系统状态\n\n" +
-			"发送 *开始配置* 来配置 AI 模型和交易所，我就能做更多了！", nil
-	}
-	return "🤖 I'm NOFXi, your AI trading agent.\n\n" +
-		"I can help you with:\n" +
-		"• `/analyze BTC` — real-time indicators\n" +
-		"• `/watch BTC` — price monitoring\n" +
-		"• `/status` — system status\n\n" +
-		"Send *setup* to configure AI model & exchange for full capabilities!", nil
-}
-
-func (a *Agent) handleSignal(sig Signal) {
-	if a.brain != nil {
-		a.brain.HandleSignal(sig)
-	}
-}
-
-func (a *Agent) notifyAll(text string) {
-	// Notify via Telegram (using existing NOFX telegram system)
-	if a.NotifyFunc != nil {
-		a.NotifyFunc(0, text)
-	}
 }

@@ -20,8 +20,8 @@ var i18nMessages = map[string]map[string]string{
 			"Just talk to me in any language 💬",
 	},
 	"status": {
-		"zh": "📊 *NOFXi 状态*\n\n• 运行中 Traders: %d/%d\n• 监控交易对: %d\n• 时间: %s",
-		"en": "📊 *NOFXi Status*\n\n• Running Traders: %d/%d\n• Watching: %d symbols\n• Time: %s",
+		"zh": "📊 *NOFXi 状态*\n\n• Traders: %d/%d 运行中\n• 监控: %d 个交易对\n• AI: %s\n• 时间: %s",
+		"en": "📊 *NOFXi Status*\n\n• Traders: %d/%d running\n• Watching: %d symbols\n• AI: %s\n• Time: %s",
 	},
 	"no_traders": {
 		"zh": "📭 暂无 Trader。请在 Web UI 中创建和配置。",
