@@ -16,6 +16,23 @@ func agentTools() []mcp.Tool {
 		{
 			Type: "function",
 			Function: mcp.FunctionDef{
+				Name:        "search_stock",
+				Description: "Search for a stock by name, ticker symbol, or keyword. Searches across A-share (沪深), Hong Kong, and US markets. Returns a list of matching stocks with their codes. Use this when the user asks about a stock not in your known list, or when you need to find the exact code for a stock.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"keyword": map[string]any{
+							"type":        "string",
+							"description": "Search keyword: stock name (e.g. '宁德时代', '腾讯'), ticker (e.g. 'TSLA', 'AAPL'), or stock code (e.g. '300750')",
+						},
+					},
+					"required": []string{"keyword"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: mcp.FunctionDef{
 				Name:        "execute_trade",
 				Description: "Execute a trade order. Use this when the user explicitly asks to open/close a position. This will create a pending trade that requires user confirmation before execution.",
 				Parameters: map[string]any{
@@ -82,6 +99,8 @@ func agentTools() []mcp.Tool {
 // handleToolCall processes a single tool call from the LLM and returns the result.
 func (a *Agent) handleToolCall(ctx context.Context, userID int64, lang string, tc mcp.ToolCall) string {
 	switch tc.Function.Name {
+	case "search_stock":
+		return a.toolSearchStock(tc.Function.Arguments)
 	case "execute_trade":
 		return a.toolExecuteTrade(ctx, userID, lang, tc.Function.Arguments)
 	case "get_positions":
@@ -93,6 +112,60 @@ func (a *Agent) handleToolCall(ctx context.Context, userID int64, lang string, t
 	default:
 		return fmt.Sprintf(`{"error": "unknown tool: %s"}`, tc.Function.Name)
 	}
+}
+
+func (a *Agent) toolSearchStock(argsJSON string) string {
+	var args struct {
+		Keyword string `json:"keyword"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return fmt.Sprintf(`{"error": "invalid arguments: %s"}`, err)
+	}
+
+	if args.Keyword == "" {
+		return `{"error": "keyword is required"}`
+	}
+
+	results, err := searchStock(args.Keyword)
+	if err != nil {
+		return fmt.Sprintf(`{"error": "search failed: %s"}`, err)
+	}
+
+	if len(results) == 0 {
+		return fmt.Sprintf(`{"results": [], "message": "no stocks found for '%s'"}`, args.Keyword)
+	}
+
+	// Limit to top 10 results
+	if len(results) > 10 {
+		results = results[:10]
+	}
+
+	// Also fetch real-time quotes for the top results (up to 3)
+	type enrichedResult struct {
+		Name   string      `json:"name"`
+		Code   string      `json:"code"`
+		Market string      `json:"market"`
+		Quote  *StockQuote `json:"quote,omitempty"`
+	}
+
+	var enriched []enrichedResult
+	for i, r := range results {
+		er := enrichedResult{Name: r.Name, Code: r.Code, Market: r.Market}
+		if i < 3 {
+			q, qErr := fetchStockQuote(r.Code)
+			if qErr == nil && q.Price > 0 {
+				er.Quote = q
+			}
+		}
+		enriched = append(enriched, er)
+	}
+
+	result, _ := json.Marshal(map[string]any{
+		"keyword": args.Keyword,
+		"count":   len(enriched),
+		"results": enriched,
+	})
+	return string(result)
 }
 
 func (a *Agent) toolExecuteTrade(_ context.Context, userID int64, lang, argsJSON string) string {

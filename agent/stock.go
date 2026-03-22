@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -98,6 +99,176 @@ func resolveStockCode(text string) (string, string) {
 	}
 
 	return "", ""
+}
+
+// SearchResult represents a stock search result from Sina suggest API.
+type SearchResult struct {
+	Name   string // Display name
+	Code   string // Sina-style code (e.g. sz300750, hk00700, gb_tsla)
+	Ticker string // Raw ticker (e.g. 300750, 00700, tsla)
+	Type   string // Market type code: 11=A股, 31=港股, 41=美股
+	Market string // "A股", "港股", "美股"
+}
+
+// searchStock queries Sina's suggest API for dynamic stock search.
+// Returns matching stocks across A-share, HK, and US markets.
+func searchStock(keyword string) ([]SearchResult, error) {
+	// type=11 (A股), 31 (港股), 41 (美股)
+	u := fmt.Sprintf("https://suggest3.sinajs.cn/suggest/type=11,31,41&key=%s&name=suggestdata",
+		url.QueryEscape(keyword))
+
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Referer", "https://finance.sina.com.cn")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	reader := transform.NewReader(resp.Body, simplifiedchinese.GBK.NewDecoder())
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	line := string(body)
+	// Parse: var suggestdata="item1;item2;..."
+	start := strings.Index(line, "\"")
+	end := strings.LastIndex(line, "\"")
+	if start == -1 || end <= start {
+		return nil, fmt.Errorf("invalid suggest response")
+	}
+	data := line[start+1 : end]
+	if data == "" {
+		return nil, nil // no results
+	}
+
+	var results []SearchResult
+	items := strings.Split(data, ";")
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		fields := strings.Split(item, ",")
+		if len(fields) < 5 {
+			continue
+		}
+		// fields: [0]=name, [1]=type, [2]=ticker, [3]=sinaCode, [4]=displayName
+		typeCode := fields[1]
+		ticker := fields[2]
+		sinaCode := fields[3]
+		displayName := fields[4]
+		if displayName == "" {
+			displayName = fields[0]
+		}
+
+		var mkt, code string
+		switch typeCode {
+		case "11": // A股
+			mkt = "A股"
+			code = sinaCode // already like sz300750, sh600519
+			if code == "" {
+				// Build from ticker
+				prefix := "sz"
+				if len(ticker) == 6 && (ticker[0] == '6' || ticker[0] == '9') {
+					prefix = "sh"
+				}
+				code = prefix + ticker
+			}
+		case "31": // 港股
+			mkt = "港股"
+			code = "hk" + ticker
+		case "41": // 美股
+			mkt = "美股"
+			code = "gb_" + ticker
+		default:
+			continue // skip funds (201), indices, etc.
+		}
+
+		results = append(results, SearchResult{
+			Name:   displayName,
+			Code:   code,
+			Ticker: ticker,
+			Type:   typeCode,
+			Market: mkt,
+		})
+	}
+
+	return results, nil
+}
+
+// resolveStockCodeDynamic tries local map first, then falls back to Sina search API.
+func resolveStockCodeDynamic(text string) (string, string) {
+	// First try the static map
+	code, name := resolveStockCode(text)
+	if code != "" {
+		return code, name
+	}
+
+	// Fall back to Sina search API
+	// Extract a meaningful search keyword from the text
+	keyword := extractStockKeyword(text)
+	if keyword == "" {
+		return "", ""
+	}
+
+	results, err := searchStock(keyword)
+	if err != nil || len(results) == 0 {
+		return "", ""
+	}
+
+	// Return the first (best) result
+	return results[0].Code, results[0].Name
+}
+
+// extractStockKeyword extracts a likely stock name/ticker from user text.
+func extractStockKeyword(text string) string {
+	// Remove common prefixes/suffixes that aren't stock names
+	text = strings.TrimSpace(text)
+
+	// If the text itself is short enough, use it directly
+	// (e.g. "中远海控" or "AAPL")
+	if len([]rune(text)) <= 10 {
+		return text
+	}
+
+	// Try to extract quoted terms first: 「xxx」 or "xxx"
+	quotePairs := [][2]string{
+		{"「", "」"},
+		{"\u201c", "\u201d"},
+		{"\u2018", "\u2019"},
+		{"\"", "\""},
+	}
+	for _, pair := range quotePairs {
+		if s := strings.Index(text, pair[0]); s >= 0 {
+			if e := strings.Index(text[s+len(pair[0]):], pair[1]); e >= 0 {
+				return text[s+len(pair[0]) : s+len(pair[0])+e]
+			}
+		}
+	}
+
+	// Look for patterns like "查 XXX", "搜索 XXX", "查一下 XXX"
+	for _, prefix := range []string{"查一下", "搜索", "查询", "看看", "搜一下", "查", "看", "search ", "find "} {
+		if idx := strings.Index(text, prefix); idx >= 0 {
+			rest := strings.TrimSpace(text[idx+len(prefix):])
+			// Take the first "word" (either Chinese characters or English word)
+			words := strings.Fields(rest)
+			if len(words) > 0 {
+				return words[0]
+			}
+		}
+	}
+
+	// Last resort: use first few words
+	words := strings.Fields(text)
+	if len(words) > 0 {
+		return words[0]
+	}
+
+	return ""
 }
 
 func fetchStockQuote(code string) (*StockQuote, error) {
