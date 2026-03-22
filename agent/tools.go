@@ -1,0 +1,260 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"nofx/mcp"
+)
+
+// agentTools defines the tools available to the LLM for autonomous action.
+func agentTools() []mcp.Tool {
+	return []mcp.Tool{
+		{
+			Type: "function",
+			Function: mcp.FunctionDef{
+				Name:        "execute_trade",
+				Description: "Execute a trade order. Use this when the user explicitly asks to open/close a position. This will create a pending trade that requires user confirmation before execution.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"action": map[string]any{
+							"type":        "string",
+							"enum":        []string{"open_long", "open_short", "close_long", "close_short"},
+							"description": "Trade action: open_long (做多/buy), open_short (做空/sell), close_long (平多), close_short (平空)",
+						},
+						"symbol": map[string]any{
+							"type":        "string",
+							"description": "Trading symbol, e.g. BTCUSDT, ETHUSDT. Always append USDT if not present.",
+						},
+						"quantity": map[string]any{
+							"type":        "number",
+							"description": "Trade quantity/amount. Required for opening positions. Use 0 to close entire position.",
+						},
+						"leverage": map[string]any{
+							"type":        "number",
+							"description": "Leverage multiplier (e.g. 5, 10, 20). Optional, defaults to trader's current setting.",
+						},
+					},
+					"required": []string{"action", "symbol", "quantity"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: mcp.FunctionDef{
+				Name:        "get_positions",
+				Description: "Get all current open positions across all traders. Returns symbol, side, size, entry price, mark price, and unrealized PnL.",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+		},
+		{
+			Type: "function",
+			Function: mcp.FunctionDef{
+				Name:        "get_balance",
+				Description: "Get account balance and equity across all traders.",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+		},
+		{
+			Type: "function",
+			Function: mcp.FunctionDef{
+				Name:        "get_market_price",
+				Description: "Get the current market price for a symbol from the trader's exchange.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"symbol": map[string]any{
+							"type":        "string",
+							"description": "Trading symbol, e.g. BTCUSDT",
+						},
+					},
+					"required": []string{"symbol"},
+				},
+			},
+		},
+	}
+}
+
+// handleToolCall processes a single tool call from the LLM and returns the result.
+func (a *Agent) handleToolCall(ctx context.Context, userID int64, lang string, tc mcp.ToolCall) string {
+	switch tc.Function.Name {
+	case "execute_trade":
+		return a.toolExecuteTrade(ctx, userID, lang, tc.Function.Arguments)
+	case "get_positions":
+		return a.toolGetPositions()
+	case "get_balance":
+		return a.toolGetBalance()
+	case "get_market_price":
+		return a.toolGetMarketPrice(tc.Function.Arguments)
+	default:
+		return fmt.Sprintf(`{"error": "unknown tool: %s"}`, tc.Function.Name)
+	}
+}
+
+func (a *Agent) toolExecuteTrade(_ context.Context, userID int64, lang, argsJSON string) string {
+	var args struct {
+		Action   string  `json:"action"`
+		Symbol   string  `json:"symbol"`
+		Quantity float64 `json:"quantity"`
+		Leverage int     `json:"leverage"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return fmt.Sprintf(`{"error": "invalid arguments: %s"}`, err)
+	}
+
+	// Normalize symbol
+	sym := strings.ToUpper(args.Symbol)
+	if !strings.HasSuffix(sym, "USDT") {
+		sym += "USDT"
+	}
+
+	// Validate action
+	validActions := map[string]bool{
+		"open_long": true, "open_short": true,
+		"close_long": true, "close_short": true,
+	}
+	if !validActions[args.Action] {
+		return fmt.Sprintf(`{"error": "invalid action: %s"}`, args.Action)
+	}
+
+	// For open actions, quantity must be > 0
+	if (args.Action == "open_long" || args.Action == "open_short") && args.Quantity <= 0 {
+		return `{"error": "quantity must be > 0 for opening positions"}`
+	}
+
+	// Create pending trade — requires user confirmation
+	trade := &TradeAction{
+		ID:        fmt.Sprintf("trade_%d", time.Now().UnixNano()),
+		Action:    args.Action,
+		Symbol:    sym,
+		Quantity:  args.Quantity,
+		Leverage:  args.Leverage,
+		Status:    "pending_confirmation",
+		CreatedAt: time.Now().Unix(),
+	}
+
+	a.pending.Add(trade)
+	a.pending.CleanExpired()
+
+	// Return confirmation info to LLM so it can present it to the user
+	result, _ := json.Marshal(map[string]any{
+		"status":   "pending_confirmation",
+		"trade_id": trade.ID,
+		"action":   trade.Action,
+		"symbol":   trade.Symbol,
+		"quantity": trade.Quantity,
+		"leverage": trade.Leverage,
+		"message":  fmt.Sprintf("Trade created. User must confirm with: 确认 %s (or: confirm %s)", trade.ID, trade.ID),
+		"expires":  "5 minutes",
+	})
+	return string(result)
+}
+
+func (a *Agent) toolGetPositions() string {
+	if a.traderManager == nil {
+		return `{"error": "no trader manager configured"}`
+	}
+
+	var positions []map[string]any
+	for id, t := range a.traderManager.GetAllTraders() {
+		pos, err := t.GetPositions()
+		if err != nil {
+			continue
+		}
+		for _, p := range pos {
+			size := toFloat(p["size"])
+			if size == 0 {
+				continue
+			}
+			tid := id
+			if len(tid) > 8 {
+				tid = tid[:8]
+			}
+			positions = append(positions, map[string]any{
+				"trader":          tid,
+				"symbol":          p["symbol"],
+				"side":            p["side"],
+				"size":            size,
+				"entry_price":     toFloat(p["entryPrice"]),
+				"mark_price":      toFloat(p["markPrice"]),
+				"unrealized_pnl":  toFloat(p["unrealizedPnl"]),
+				"leverage":        p["leverage"],
+			})
+		}
+	}
+
+	if len(positions) == 0 {
+		return `{"positions": [], "message": "no open positions"}`
+	}
+
+	result, _ := json.Marshal(map[string]any{"positions": positions})
+	return string(result)
+}
+
+func (a *Agent) toolGetBalance() string {
+	if a.traderManager == nil {
+		return `{"error": "no trader manager configured"}`
+	}
+
+	var balances []map[string]any
+	for id, t := range a.traderManager.GetAllTraders() {
+		info, err := t.GetAccountInfo()
+		if err != nil {
+			continue
+		}
+		tid := id
+		if len(tid) > 8 {
+			tid = tid[:8]
+		}
+		balances = append(balances, map[string]any{
+			"trader":       tid,
+			"name":         t.GetName(),
+			"exchange":     t.GetExchange(),
+			"total_equity": toFloat(info["total_equity"]),
+			"available":    toFloat(info["available_balance"]),
+			"used_margin":  toFloat(info["used_margin"]),
+		})
+	}
+
+	result, _ := json.Marshal(map[string]any{"balances": balances})
+	return string(result)
+}
+
+func (a *Agent) toolGetMarketPrice(argsJSON string) string {
+	var args struct {
+		Symbol string `json:"symbol"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return fmt.Sprintf(`{"error": "invalid arguments: %s"}`, err)
+	}
+
+	sym := strings.ToUpper(args.Symbol)
+	if !strings.HasSuffix(sym, "USDT") {
+		sym += "USDT"
+	}
+
+	if a.traderManager == nil {
+		return `{"error": "no trader manager configured"}`
+	}
+
+	for _, t := range a.traderManager.GetAllTraders() {
+		underlying := t.GetUnderlyingTrader()
+		if underlying == nil {
+			continue
+		}
+		price, err := underlying.GetMarketPrice(sym)
+		if err == nil && price > 0 {
+			result, _ := json.Marshal(map[string]any{
+				"symbol": sym,
+				"price":  price,
+			})
+			return string(result)
+		}
+	}
+
+	return fmt.Sprintf(`{"error": "could not get price for %s"}`, sym)
+}

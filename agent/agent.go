@@ -30,6 +30,7 @@ type Agent struct {
 	scheduler     *Scheduler
 	logger        *slog.Logger
 	history       *chatHistory
+	pending       *pendingTrades
 	NotifyFunc    func(userID int64, text string) error
 }
 
@@ -51,7 +52,7 @@ func DefaultConfig() *Config {
 
 func New(tm *manager.TraderManager, st *store.Store, cfg *Config, logger *slog.Logger) *Agent {
 	if cfg == nil { cfg = DefaultConfig() }
-	return &Agent{traderManager: tm, store: st, config: cfg, logger: logger, history: newChatHistory(20)}
+	return &Agent{traderManager: tm, store: st, config: cfg, logger: logger, history: newChatHistory(20), pending: newPendingTrades()}
 }
 
 func (a *Agent) SetAIClient(c mcp.AIClient) { a.aiClient = c }
@@ -133,12 +134,25 @@ func (a *Agent) HandleMessage(ctx context.Context, userID int64, text string) (s
 		return "🧹 Conversation history cleared.", nil
 	}
 
+	// Check for trade confirmation (e.g. "确认 trade_xxx" or "confirm trade_xxx")
+	if resp, handled := a.handleTradeConfirmation(ctx, userID, text, lang); handled {
+		return resp, nil
+	}
+
+	// Check for direct trade commands (e.g. "做多 BTC 0.01")
+	if trade := parseTradeCommand(text); trade != nil {
+		a.pending.Add(trade)
+		a.pending.CleanExpired()
+		return formatTradeConfirmation(trade, lang), nil
+	}
+
 	// EVERYTHING else → LLM with tools
 	return a.thinkAndAct(ctx, userID, lang, text)
 }
 
 // thinkAndAct sends the user message to LLM with full context and tools.
 // The LLM decides what to do — analyze, query, trade, or just chat.
+// Supports a tool-calling loop: LLM can call tools, get results, and continue.
 func (a *Agent) thinkAndAct(ctx context.Context, userID int64, lang, text string) (string, error) {
 	if a.aiClient == nil {
 		return a.noAIFallback(lang, text)
@@ -170,18 +184,82 @@ func (a *Agent) thinkAndAct(ctx context.Context, userID int64, lang, text string
 	// Record user message in history
 	a.history.Add(userID, "user", text)
 
-	// Call LLM with full conversation context
-	req := &mcp.Request{Messages: messages}
-	resp, err := a.aiClient.CallWithRequest(req)
-	if err != nil {
-		a.logger.Error("LLM call failed", "error", err)
-		return a.noAIFallback(lang, text)
+	// Define tools for the LLM
+	tools := agentTools()
+
+	// Tool-calling loop (max 5 iterations to prevent infinite loops)
+	const maxToolRounds = 5
+	for round := 0; round < maxToolRounds; round++ {
+		req := &mcp.Request{
+			Messages:   messages,
+			Tools:      tools,
+			ToolChoice: "auto",
+		}
+
+		resp, err := a.aiClient.CallWithRequestFull(req)
+		if err != nil {
+			a.logger.Error("LLM call failed", "error", err, "round", round)
+			if round == 0 {
+				// First round failed — try without tools as fallback
+				plainReq := &mcp.Request{Messages: messages}
+				plainResp, plainErr := a.aiClient.CallWithRequest(plainReq)
+				if plainErr != nil {
+					return a.noAIFallback(lang, text)
+				}
+				a.history.Add(userID, "assistant", plainResp)
+				return plainResp, nil
+			}
+			return a.noAIFallback(lang, text)
+		}
+
+		// If LLM returned a text response (no tool calls), we're done
+		if len(resp.ToolCalls) == 0 {
+			a.history.Add(userID, "assistant", resp.Content)
+			return resp.Content, nil
+		}
+
+		// LLM wants to call tools — process each one
+		a.logger.Info("LLM tool calls", "count", len(resp.ToolCalls), "round", round)
+
+		// Add assistant message with tool calls to conversation
+		assistantMsg := mcp.Message{
+			Role:      "assistant",
+			ToolCalls: resp.ToolCalls,
+		}
+		if resp.Content != "" {
+			assistantMsg.Content = resp.Content
+		}
+		messages = append(messages, assistantMsg)
+
+		// Execute each tool call and add results
+		for _, tc := range resp.ToolCalls {
+			a.logger.Info("executing tool",
+				"name", tc.Function.Name,
+				"args", tc.Function.Arguments,
+				"call_id", tc.ID,
+			)
+
+			result := a.handleToolCall(ctx, userID, lang, tc)
+
+			// Add tool result message
+			messages = append(messages, mcp.Message{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			})
+		}
+
+		// Continue the loop — LLM will see tool results and either respond or call more tools
 	}
 
-	// Record assistant response in history
-	a.history.Add(userID, "assistant", resp)
-
-	return resp, nil
+	// If we exhausted all rounds, ask LLM for a final text response without tools
+	finalReq := &mcp.Request{Messages: messages}
+	finalResp, err := a.aiClient.CallWithRequest(finalReq)
+	if err != nil {
+		return a.noAIFallback(lang, text)
+	}
+	a.history.Add(userID, "assistant", finalResp)
+	return finalResp, nil
 }
 
 // buildSystemPrompt creates the system prompt that makes NOFXi behave like a real agent.
@@ -214,6 +292,19 @@ func (a *Agent) buildSystemPrompt(lang string) string {
 - 必须明确告诉用户"以下分析基于历史知识，不含实时数据，请以实际行情为准"
 - 可以分析趋势、逻辑、策略框架，但具体价位必须让用户自己查看
 
+## 工具使用
+你可以调用以下工具来执行操作：
+- **execute_trade** — 下单交易（做多/做空/平多/平空）。调用后会创建待确认订单，用户需回复"确认 trade_xxx"才会真正执行。
+- **get_positions** — 查看当前所有持仓
+- **get_balance** — 查看账户余额
+- **get_market_price** — 获取交易所实时价格
+
+### 交易安全规则
+- 用户明确要求交易时才调用 execute_trade
+- 分析和建议不需要调用工具，直接回复即可
+- 交易确认信息要清晰展示：品种、方向、数量、杠杆
+- 提醒用户确认命令格式
+
 ## 行为准则
 - 简洁、专业、有观点。不说废话。
 - 用户问什么答什么，不要推销配置。
@@ -244,6 +335,19 @@ func (a *Agent) buildSystemPrompt(lang string) string {
 - For assets without real-time data, NEVER fabricate specific prices
 - Must tell user: "Analysis based on historical knowledge, not live data. Verify with actual quotes."
 - Can analyze trends, logic, strategy frameworks — but specific prices must be verified by user
+
+## Tools
+You can call these tools to take action:
+- **execute_trade** — Place a trade order (open_long/open_short/close_long/close_short). Creates a pending order that requires user confirmation.
+- **get_positions** — View all current open positions
+- **get_balance** — View account balance and equity
+- **get_market_price** — Get real-time price from the exchange
+
+### Trade Safety Rules
+- Only call execute_trade when user explicitly requests a trade
+- Analysis and advice don't need tools — just reply directly
+- Show trade details clearly: symbol, direction, quantity, leverage
+- Remind user of the confirmation command format
 
 ## Behavior
 - Concise, professional, opinionated. No fluff.
