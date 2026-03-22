@@ -79,11 +79,36 @@ func setConfig(st *store.Store, uid int64, key, val string) {
 func (a *Agent) handleSetupFlow(userID int64, text string, L string) (string, bool) {
 	state := a.getSetupState(userID)
 
-	// Cancel setup
 	lower := strings.ToLower(text)
+
+	// Cancel setup — explicit or implicit (user asking unrelated questions)
 	if lower == "cancel" || lower == "取消" || lower == "/cancel" {
 		a.clearSetupState(userID)
 		return a.setupMsg(L, "cancelled"), true
+	}
+
+	// If in a step that expects a key/secret, check if user is NOT sending a key
+	// Keys are typically long strings without spaces and Chinese characters
+	if state.Step == "await_api_key" || state.Step == "await_api_secret" || state.Step == "await_passphrase" || state.Step == "await_ai_key" {
+		trimmed := strings.TrimSpace(text)
+		hasChinese := false
+		for _, r := range trimmed {
+			if r >= 0x4e00 && r <= 0x9fff {
+				hasChinese = true
+				break
+			}
+		}
+		hasSpaces := strings.Contains(trimmed, " ") && !strings.HasPrefix(trimmed, "sk-")
+		tooShort := len(trimmed) < 8
+
+		if hasChinese || hasSpaces || tooShort {
+			// User is probably asking a question, not providing a key
+			a.clearSetupState(userID)
+			if L == "zh" {
+				return "👌 配置已暂停。我先回答你的问题——\n\n随时发送 *开始配置* 继续配置。", false
+			}
+			return "👌 Setup paused. Let me answer your question first—\n\nSend *setup* anytime to continue.", false
+		}
 	}
 
 	switch state.Step {
@@ -220,12 +245,12 @@ func (a *Agent) finishSetup(userID int64, state *SetupState, L string) (string, 
 	a.clearSetupState(userID)
 
 	result := ""
+	maskedKey := maskKey(state.APIKey)
 	if L == "zh" {
 		result = fmt.Sprintf("🎉 *配置完成！*\n\n"+
 			"• 交易所: %s\n"+
-			"• API Key: %s...%s\n",
-			strings.Title(state.Exchange),
-			state.APIKey[:4], state.APIKey[len(state.APIKey)-4:])
+			"• API Key: %s\n",
+			strings.Title(state.Exchange), maskedKey)
 		if state.AIModel != "" {
 			result += fmt.Sprintf("• AI 模型: %s\n", state.AIModel)
 		}
@@ -233,9 +258,8 @@ func (a *Agent) finishSetup(userID int64, state *SetupState, L string) (string, 
 	} else {
 		result = fmt.Sprintf("🎉 *Setup Complete!*\n\n"+
 			"• Exchange: %s\n"+
-			"• API Key: %s...%s\n",
-			strings.Title(state.Exchange),
-			state.APIKey[:4], state.APIKey[len(state.APIKey)-4:])
+			"• API Key: %s\n",
+			strings.Title(state.Exchange), maskedKey)
 		if state.AIModel != "" {
 			result += fmt.Sprintf("• AI Model: %s\n", state.AIModel)
 		}
@@ -332,6 +356,13 @@ func (a *Agent) createTraderFromSetup(state *SetupState) error {
 	)
 
 	return nil
+}
+
+func maskKey(key string) string {
+	if len(key) <= 8 {
+		return "****"
+	}
+	return key[:4] + "****" + key[len(key)-4:]
 }
 
 func needsPassphrase(exchange string) bool {
