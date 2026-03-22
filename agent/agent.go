@@ -245,6 +245,17 @@ func (a *Agent) gatherContext(text string) string {
 		}
 	}
 
+	// A-share / stocks — try Sina Finance
+	stockCode, stockName := resolveStockCode(text)
+	if stockCode != "" {
+		quote, err := fetchStockQuote(stockCode)
+		if err == nil && quote.Price > 0 {
+			parts = append(parts, fmt.Sprintf("[%s(%s) Real-time A-share Data]\n%s", quote.Name, quote.Code, formatStockQuote(quote)))
+		} else if err != nil {
+			a.logger.Error("fetch stock quote", "code", stockCode, "name", stockName, "error", err)
+		}
+	}
+
 	// Trader positions
 	if a.traderManager != nil {
 		for _, t := range a.traderManager.GetAllTraders() {
