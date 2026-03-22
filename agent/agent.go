@@ -95,11 +95,45 @@ func (a *Agent) SetAIClient(c mcp.AIClient) {
 	a.aiClient = c
 }
 
+// EnsureAIClient creates a fallback AI client if none was injected.
+// Uses environment variables or store config.
+func (a *Agent) EnsureAIClient() {
+	if a.aiClient != nil {
+		return
+	}
+
+	// Try to create from store AI model configs
+	if a.store != nil {
+		models, err := a.store.AIModel().List("default")
+		if err == nil {
+			for _, m := range models {
+				apiKey := string(m.APIKey)
+				if apiKey != "" && m.CustomAPIURL != "" {
+					client := mcp.NewClient()
+					modelName := m.CustomModelName
+					if modelName == "" {
+						modelName = m.ID
+					}
+					client.SetAPIKey(apiKey, m.CustomAPIURL, modelName)
+					a.aiClient = client
+					a.logger.Info("agent AI client created from store", "model", modelName, "url", m.CustomAPIURL)
+					return
+				}
+			}
+		}
+	}
+
+	a.logger.Warn("no AI client available — chat and analysis will be limited")
+}
+
 
 
 // Start starts all agent services.
 func (a *Agent) Start() {
 	a.logger.Info("starting NOFXi agent...")
+
+	// Ensure we have an AI client
+	a.EnsureAIClient()
 
 	// Start sentinel (market anomaly detection)
 	if a.config.EnableSentinel {
@@ -167,7 +201,14 @@ func (a *Agent) HandleMessage(ctx context.Context, userID int64, text string) (s
 	case IntentQuery:
 		return a.handleQuery(lang, intent)
 	case IntentAnalyze:
-		return a.handleAnalyze(ctx, lang, intent)
+		// Only use structured analyze for simple "/analyze BTC" style commands
+		// Complex natural language goes to AI chat for better understanding
+		if len(strings.Fields(text)) <= 3 || strings.HasPrefix(text, "/") {
+			return a.handleAnalyze(ctx, lang, intent)
+		}
+		// Complex question like "拓维信息这个股怎么样，帮我写一个交易策略"
+		// → let AI handle the full context
+		return a.handleChat(ctx, lang, userID, text)
 	case IntentTrade:
 		return a.handleTrade(lang, intent)
 	case IntentWatch:
