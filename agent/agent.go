@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -62,7 +63,9 @@ func (a *Agent) EnsureAIClient() {
 			for _, m := range models {
 				apiKey := string(m.APIKey)
 				if apiKey != "" && m.CustomAPIURL != "" {
-					client := mcp.NewClient()
+					// Use standard HTTP client (no SSRF protection) since we control the URLs
+					httpClient := &http.Client{Timeout: 60 * time.Second}
+					client := mcp.NewClient(mcp.WithHTTPClient(httpClient))
 					name := m.CustomModelName
 					if name == "" { name = m.ID }
 					client.SetAPIKey(apiKey, m.CustomAPIURL, name)
