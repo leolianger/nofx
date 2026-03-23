@@ -101,6 +101,17 @@
 - [DONE] Zero unsafe type assertions remaining in `trader/` package
 - [DONE] Fix frontend `config.ts`: rejected promise cached forever on network error (never retried)
 
+### 2026-03-23 12:37 — Agent Intelligence + Resource Leak Fixes
+- [DONE] Expand gatherContext crypto detection: 10 hardcoded → 38+ known symbols + dynamic XXXUSDT pattern extraction
+  — Users asking about PEPE, SUI, TRUMP, etc. now get real-time data enrichment
+  — Caps at 5 symbols per message to prevent slow context gathering
+- [DONE] Add `get_trade_history` tool to agent LLM toolset
+  — Returns recent closed trades with PnL per trade, win rate, total PnL summary
+  — Users can now ask "how have my trades been doing?" and get structured data
+- [DONE] Fix ticker leak in ALL 9 exchange order_sync goroutines (missing `defer ticker.Stop()`)
+  — OKX, Hyperliquid, Aster, Bybit, KuCoin, Gate, Bitget, Lighter, Binance
+  — Each stopped trader was leaking a goroutine + ticker forever
+
 ### Features
 - [PENDING] Agent chat has fake streaming (word-by-word setTimeout) — implement real SSE streaming
 - [PENDING] Add WebSocket support for real-time position/balance updates instead of polling
