@@ -183,8 +183,12 @@ func (t *AlpacaTrader) GetBalance() (map[string]interface{}, error) {
 	buyingPower := parseFloatStr(acct.BuyingPower)
 
 	result := map[string]interface{}{
-		"total_equity":      equity,
-		"available_balance": cash,
+		// Standard fields expected by auto_trader (camelCase)
+		"totalEquity":           equity,
+		"totalWalletBalance":    cash,
+		"availableBalance":      cash,
+		"totalUnrealizedProfit": equity - cash,
+		// Alpaca-specific fields
 		"buying_power":      buyingPower,
 		"currency":          acct.Currency,
 		"status":            acct.Status,
@@ -230,15 +234,17 @@ func (t *AlpacaTrader) GetPositions() ([]map[string]interface{}, error) {
 		}
 
 		result = append(result, map[string]interface{}{
-			"symbol":        p.Symbol,
-			"side":          side,
-			"size":          qty,
-			"entryPrice":    parseFloatStr(p.AvgEntryPrice),
-			"markPrice":     parseFloatStr(p.CurrentPrice),
-			"unrealizedPnl": parseFloatStr(p.UnrealizedPL),
-			"marketValue":   parseFloatStr(p.MarketValue),
-			"leverage":      1,
-			"exchange":      "alpaca",
+			"symbol":           p.Symbol,
+			"side":             side,
+			"size":             qty,
+			"positionAmt":      qty, // Standard field expected by auto_trader
+			"entryPrice":       parseFloatStr(p.AvgEntryPrice),
+			"markPrice":        parseFloatStr(p.CurrentPrice),
+			"unrealizedPnl":    parseFloatStr(p.UnrealizedPL),
+			"unRealizedProfit": parseFloatStr(p.UnrealizedPL), // Standard field
+			"marketValue":      parseFloatStr(p.MarketValue),
+			"leverage":         float64(1),
+			"exchange":         "alpaca",
 		})
 	}
 
@@ -433,10 +439,24 @@ func (t *AlpacaTrader) CancelTakeProfitOrders(symbol string) error {
 	return t.cancelOrdersByType(symbol, "limit")
 }
 
-// CancelAllOrders cancels all pending orders for a symbol
+// CancelAllOrders cancels all pending orders for a symbol.
+// If symbol is empty, cancels ALL orders across all symbols.
 func (t *AlpacaTrader) CancelAllOrders(symbol string) error {
-	_, err := t.doDelete("/v2/orders")
-	return err
+	if symbol == "" {
+		_, err := t.doDelete("/v2/orders")
+		return err
+	}
+	// Filter by symbol: get open orders for this symbol, then cancel each
+	orders, err := t.GetOpenOrders(symbol)
+	if err != nil {
+		return fmt.Errorf("get open orders for %s: %w", symbol, err)
+	}
+	for _, o := range orders {
+		if _, err := t.doDelete("/v2/orders/" + o.OrderID); err != nil {
+			logger.Warnf("[Alpaca] cancel order %s: %v", o.OrderID, err)
+		}
+	}
+	return nil
 }
 
 // CancelStopOrders cancels both stop and limit orders for a symbol
@@ -472,10 +492,54 @@ func (t *AlpacaTrader) GetOrderStatus(symbol string, orderID string) (map[string
 	}, nil
 }
 
-// GetClosedPnL returns closed position records (Alpaca doesn't have a direct endpoint for this)
+// GetClosedPnL returns closed position records from Alpaca's closed orders.
+// Alpaca doesn't track PnL directly, so we reconstruct from filled sell orders.
 func (t *AlpacaTrader) GetClosedPnL(startTime time.Time, limit int) ([]ClosedPnLRecord, error) {
-	// Alpaca tracks activities, not PnL directly. Return empty for now.
-	return nil, nil
+	path := fmt.Sprintf("/v2/orders?status=closed&direction=desc&limit=%d&after=%s",
+		limit, startTime.Format(time.RFC3339))
+
+	data, err := t.doGet(path)
+	if err != nil {
+		return nil, fmt.Errorf("get closed orders: %w", err)
+	}
+
+	var orders []AlpacaOrder
+	if err := json.Unmarshal(data, &orders); err != nil {
+		return nil, fmt.Errorf("parse closed orders: %w", err)
+	}
+
+	var records []ClosedPnLRecord
+	for _, o := range orders {
+		// Only include filled sell orders (closing a long position)
+		if o.Status != "filled" || o.Side != "sell" {
+			continue
+		}
+
+		filledQty := parseFloatStr(o.FilledQty)
+		filledPrice := parseFloatStr(o.FilledAvgPrice)
+		if filledQty <= 0 || filledPrice <= 0 {
+			continue
+		}
+
+		closeTime, _ := time.Parse(time.RFC3339Nano, o.FilledAt)
+		if closeTime.IsZero() {
+			closeTime, _ = time.Parse(time.RFC3339Nano, o.UpdatedAt)
+		}
+
+		records = append(records, ClosedPnLRecord{
+			Symbol:    o.Symbol,
+			Side:      "long", // Sell orders close long positions
+			ExitPrice: filledPrice,
+			Quantity:  filledQty,
+			ExitTime:  closeTime,
+			OrderID:   o.ID,
+			CloseType: "manual",
+			Fee:       0, // Alpaca is commission-free for most stocks
+			Leverage:  1,
+		})
+	}
+
+	return records, nil
 }
 
 // GetOpenOrders returns open orders
@@ -513,6 +577,29 @@ func (t *AlpacaTrader) GetOpenOrders(symbol string) ([]OpenOrder, error) {
 	}
 
 	return result, nil
+}
+
+// IsMarketOpen checks Alpaca's clock endpoint to determine if the market is open.
+func (t *AlpacaTrader) IsMarketOpen() (bool, string, error) {
+	data, err := t.doGet("/v2/clock")
+	if err != nil {
+		return false, "", fmt.Errorf("get clock: %w", err)
+	}
+
+	var clock struct {
+		IsOpen    bool   `json:"is_open"`
+		NextOpen  string `json:"next_open"`
+		NextClose string `json:"next_close"`
+	}
+	if err := json.Unmarshal(data, &clock); err != nil {
+		return false, "", fmt.Errorf("parse clock: %w", err)
+	}
+
+	status := "open"
+	if !clock.IsOpen {
+		status = fmt.Sprintf("closed (opens %s)", clock.NextOpen)
+	}
+	return clock.IsOpen, status, nil
 }
 
 // --- Helper: cancel orders by type ---

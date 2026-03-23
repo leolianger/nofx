@@ -274,6 +274,7 @@ func (a *Agent) toolGetPositions() string {
 			}
 			positions = append(positions, map[string]any{
 				"trader":          tid,
+				"exchange":        t.GetExchange(),
 				"symbol":          p["symbol"],
 				"side":            p["side"],
 				"size":            size,
@@ -339,9 +340,18 @@ func (a *Agent) toolGetMarketPrice(argsJSON string) string {
 		return `{"error": "no trader manager configured"}`
 	}
 
+	wantStock := isStockSymbol(sym)
 	for _, t := range a.traderManager.GetAllTraders() {
 		underlying := t.GetUnderlyingTrader()
 		if underlying == nil {
+			continue
+		}
+		// Route to correct exchange type (stock vs crypto)
+		isAlpaca := t.GetExchange() == "alpaca"
+		if wantStock && !isAlpaca {
+			continue
+		}
+		if !wantStock && isAlpaca {
 			continue
 		}
 		price, err := underlying.GetMarketPrice(sym)

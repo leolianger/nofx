@@ -112,7 +112,8 @@ func parseTradeCommand(text string) *TradeAction {
 		return nil
 	}
 	symbol = words[1]
-	if !strings.HasSuffix(symbol, "USDT") {
+	// Only append USDT for crypto symbols, not stock tickers
+	if !isStockSymbol(symbol) && !strings.HasSuffix(symbol, "USDT") {
 		symbol += "USDT"
 	}
 
@@ -226,7 +227,10 @@ func formatTradeConfirmation(trade *TradeAction, lang string) string {
 		"close_short": "平空 (Close Short)",
 	}
 
-	symbol := strings.TrimSuffix(trade.Symbol, "USDT")
+	symbol := trade.Symbol
+	if strings.HasSuffix(symbol, "USDT") {
+		symbol = strings.TrimSuffix(symbol, "USDT")
+	}
 	actionName := actionNames[trade.Action]
 	if actionName == "" {
 		actionName = trade.Action
@@ -308,7 +312,10 @@ func (a *Agent) handleTradeConfirmation(ctx context.Context, userID int64, text,
 	}
 
 	trade.Status = "executed"
-	symbol := strings.TrimSuffix(trade.Symbol, "USDT")
+	symbol := trade.Symbol
+	if strings.HasSuffix(symbol, "USDT") {
+		symbol = strings.TrimSuffix(symbol, "USDT")
+	}
 	actionEmoji := "📈"
 	if strings.Contains(trade.Action, "short") {
 		actionEmoji = "📉"

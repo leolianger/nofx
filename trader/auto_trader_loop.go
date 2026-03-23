@@ -6,6 +6,7 @@ import (
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/store"
+	"nofx/trader/alpaca"
 	"nofx/wallet"
 	"strings"
 	"time"
@@ -31,6 +32,19 @@ func (at *AutoTrader) runCycle() error {
 	// Check USDC balance periodically for claw402 users (every 10 cycles)
 	if at.callCount%10 == 0 && store.IsClaw402Config(at.config.AIModel) {
 		at.checkClaw402Balance()
+	}
+
+	// Check market hours for stock exchanges (Alpaca)
+	if at.exchange == "alpaca" {
+		if alpacaTrader, ok := at.trader.(*alpaca.AlpacaTrader); ok {
+			isOpen, status, err := alpacaTrader.IsMarketOpen()
+			if err != nil {
+				logger.Warnf("⚠️ [%s] Failed to check market clock: %v", at.name, err)
+			} else if !isOpen {
+				logger.Infof("🔒 [%s] US stock market %s — skipping trading cycle #%d", at.name, status, at.callCount)
+				return nil
+			}
+		}
 	}
 
 	// Create decision record
