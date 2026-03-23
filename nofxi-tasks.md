@@ -55,7 +55,19 @@
 - [DONE] Sanitize 3 more error message leaks in API responses (handler_trader.go ×2, handler_ai_cost.go ×1)
 - [PENDING] `context.Background()` used in ~69 exchange/trader calls — should propagate request context for proper cancellation (partially done: kline handlers fixed, trader/exchange calls remain)
 
+### Security — Response Body Limits
+- [DONE] Created `safe/io.go` with `ReadAllLimited` (default 10MB limit) to prevent OOM from malicious responses
+- [DONE] Replaced 62 unbounded `io.ReadAll(resp.Body)` calls across 32 files (all exchange traders, providers, MCP, market, wallet, telegram, kernel)
+
+### Robustness — HTTP Status Code Checks
+- [DONE] Add HTTP status code checks in market/api_client.go (exchangeInfo, klines, price)
+- [DONE] Add HTTP status code checks in market/data.go (openInterest, premiumIndex)
+- [DONE] Add HTTP status code checks in provider/coinank (GET + POST)
+- [DONE] Add HTTP status code checks in provider/twelvedata (timeSeries + quote)
+- [DONE] Add `truncateBody` helper for safe error messages
+
 ### Performance
+- [DONE] Reuse shared HTTP client in Hyperliquid trader (was creating new client per API call, preventing TCP/TLS connection reuse)
 - [PENDING] `gatherContext` in agent.go iterates all traders and positions on every message — consider caching (low priority: only triggered per user message)
 
 ### Features
