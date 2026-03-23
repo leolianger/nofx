@@ -66,7 +66,7 @@ func (b *Brain) scanNews(seen map[string]bool) {
 	resp, err := b.http.Get("https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest")
 	if err != nil { return }
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024)) // 1MB limit
 	if err != nil { return }
 
 	var result struct {
@@ -138,7 +138,7 @@ func (b *Brain) sendBrief(hour int) {
 	for _, sym := range []string{"BTCUSDT", "ETHUSDT"} {
 		resp, err := b.http.Get(fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s", sym))
 		if err != nil { continue }
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024)) // 64KB limit
 		resp.Body.Close()
 		if readErr != nil { continue }
 		var t map[string]string

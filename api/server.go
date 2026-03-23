@@ -25,6 +25,7 @@ type Server struct {
 	httpServer       *http.Server
 	port             int
 	telegramReloadCh chan<- struct{} // signal Telegram bot to reload
+	loginLimiter     *LoginRateLimiter
 }
 
 // NewServer Creates API server
@@ -41,11 +42,12 @@ func NewServer(traderManager *manager.TraderManager, st *store.Store, cryptoServ
 	cryptoHandler := NewCryptoHandler(cryptoService)
 
 	s := &Server{
-		router:        router,
+		router:       router,
 		traderManager: traderManager,
 		store:         st,
 		cryptoHandler: cryptoHandler,
 		port:          port,
+		loginLimiter:  NewLoginRateLimiter(),
 	}
 
 	// Setup routes
@@ -111,10 +113,12 @@ func (s *Server) setupRoutes() {
 		// Public strategy market (no authentication required)
 		s.route(api, "GET", "/strategies/public", "Public strategy market", s.handlePublicStrategies)
 
-		// Authentication related routes (no authentication required)
-		s.route(api, "POST", "/register", "Register new user", s.handleRegister)
-		s.route(api, "POST", "/login", "User login, returns JWT token", s.handleLogin)
-		s.route(api, "POST", "/reset-password", "Reset password", s.handleResetPassword)
+		// Authentication related routes (no authentication required, rate-limited)
+		authLimited := api.Group("/", LoginRateLimitMiddleware(s.loginLimiter))
+		s.route(authLimited, "POST", "/register", "Register new user", s.handleRegister)
+		s.route(authLimited, "POST", "/login", "User login, returns JWT token", s.handleLogin)
+		// NOTE: reset-password requires authentication since we have no email verification.
+		// This prevents unauthenticated password reset attacks.
 
 		// Routes requiring authentication
 		protected := api.Group("/", s.authMiddleware())
@@ -126,6 +130,7 @@ func (s *Server) setupRoutes() {
 			s.routeWithSchema(protected, "PUT", "/user/password", "Change current user password",
 				`Body: {"new_password":"<string, min 8 chars>"}`,
 				s.handleChangePassword)
+			s.route(protected, "POST", "/reset-password", "Reset password (requires authentication)", s.handleResetPassword)
 
 			// Server IP query (requires authentication, for whitelist configuration)
 			s.route(protected, "GET", "/server-ip", "Get server public IP (for exchange whitelist)", s.handleGetServerIP)
@@ -355,7 +360,7 @@ Returns: {"total_trades":<int>,"winning_trades":<int>,"win_rate":<float>,"total_
 func (s *Server) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
-		"time":   c.Request.Context().Value("time"),
+		"time":   time.Now().Format(time.RFC3339),
 	})
 }
 

@@ -65,7 +65,8 @@ func (w *WebHandler) HandleChat(rw http.ResponseWriter, r *http.Request) {
 
 	resp, err := w.agent.HandleMessage(ctx, req.UserID, msg)
 	if err != nil {
-		writeJSON(rw, 500, map[string]string{"error": err.Error()})
+		w.logger.Error("agent HandleMessage failed", "error", err, "user_id", req.UserID)
+		writeJSON(rw, 500, map[string]string{"error": "Failed to process message. Please try again."})
 		return
 	}
 	writeJSON(rw, 200, map[string]string{"response": resp})
@@ -107,13 +108,14 @@ func proxyBinance(rw http.ResponseWriter, url string) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		writeJSON(rw, 502, map[string]string{"error": err.Error()})
+		writeJSON(rw, 502, map[string]string{"error": "upstream request failed"})
 		return
 	}
 	defer resp.Body.Close()
 	rw.Header().Set("Content-Type", "application/json")
 	rw.Header().Set("Access-Control-Allow-Origin", "*")
-	io.Copy(rw, resp.Body)
+	// Limit response body to 2MB to prevent memory exhaustion
+	io.Copy(rw, io.LimitReader(resp.Body, 2*1024*1024))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

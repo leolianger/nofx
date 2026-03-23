@@ -287,7 +287,7 @@ func fetchStockQuote(code string) (*StockQuote, error) {
 	if err != nil { return nil, err }
 	defer resp.Body.Close()
 
-	reader := transform.NewReader(resp.Body, simplifiedchinese.GBK.NewDecoder())
+	reader := transform.NewReader(io.LimitReader(resp.Body, 256*1024), simplifiedchinese.GBK.NewDecoder())
 	body, err := io.ReadAll(reader)
 	if err != nil { return nil, err }
 

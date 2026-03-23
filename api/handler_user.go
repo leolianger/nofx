@@ -136,6 +136,10 @@ func (s *Server) handleLogin(c *gin.Context) {
 
 	// Verify password
 	if !auth.CheckPassword(req.Password, user.PasswordHash) {
+		// Record failed attempt for rate limiting
+		if s.loginLimiter != nil {
+			s.loginLimiter.RecordFailure(c.ClientIP())
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Email or password incorrect"})
 		return
 	}
@@ -145,6 +149,11 @@ func (s *Server) handleLogin(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
+	}
+
+	// Clear rate limit on success
+	if s.loginLimiter != nil {
+		s.loginLimiter.RecordSuccess(c.ClientIP())
 	}
 
 	c.JSON(http.StatusOK, gin.H{
