@@ -17,14 +17,27 @@
 - [DONE] Fix news `seen` map eviction: keep half instead of clearing all (was losing dedup state)
 - [DONE] Agent chat endpoint already behind auth middleware (verified, was falsely flagged as pending)
 
+### 2026-03-23 10:07 — Context Propagation, Component Extraction, Security & Reliability
+- [DONE] Propagate `c.Request.Context()` in all kline API handlers (was `context.Background()`)
+  — client disconnects now cancel upstream calls to CoinAnk, Alpaca, TwelveData, Hyperliquid
+- [DONE] Extract `MessageRenderer.tsx` from `AgentChatPage.tsx` (1009 → 825 lines)
+  — renderMessageContent + renderInline moved to `components/agent/MessageRenderer.tsx`
+- [DONE] Remove `/api/crypto/decrypt` from public routes — was a security hole allowing
+  anyone to decrypt ciphertext without authentication (internal callers use service directly)
+- [DONE] Add `safe.Go` / `safe.GoNamed` panic recovery wrapper (`safe/go.go`)
+  — 31 goroutines had zero `recover()` calls; a single panic would crash the entire process
+- [DONE] Apply `safe.GoNamed` to all trader launch goroutines (StartAll, RestoreRunning,
+  LoadSingleTrader auto-start, API start/restart handlers)
+
 ## Pending
 
 ### Security
 - [PENDING] Investigate GitHub Dependabot's 21 reported vulnerabilities (13 high, 7 moderate, 1 low)
+- [PENDING] Apply `safe.Go` to remaining 25+ goroutines (order_sync, telegram bot, agent brain, etc.)
 
 ### Code Quality
-- [PENDING] `context.Background()` used in ~69 exchange/trader calls — should propagate request context for proper cancellation
-- [PENDING] `AgentChatPage.tsx` is 1001 lines — could be split into smaller components
+- [PENDING] `context.Background()` used in ~69 exchange/trader calls — should propagate request context for proper cancellation (partially done: kline handlers fixed, trader/exchange calls remain)
+- [PENDING] `AgentChatPage.tsx` is 825 lines — could still extract WelcomeScreen and ChatMessages components
 
 ### Performance
 - [PENDING] `gatherContext` in agent.go iterates all traders and positions on every message — consider caching (low priority: only triggered per user message)
