@@ -4,8 +4,8 @@
 package nofxos
 
 import (
-	"io/ioutil"
 	"net/http"
+	"nofx/safe"
 	"nofx/security"
 	"strings"
 	"sync"
@@ -108,7 +108,7 @@ func (c *Client) doRequest(endpoint string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := safe.ReadAllLimited(resp.Body, 0)
 	if err != nil {
 		return nil, err
 	}

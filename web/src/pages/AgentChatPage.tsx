@@ -272,7 +272,7 @@ export function AgentChatPage() {
     <div
       style={{
         display: 'flex',
-        height: 'calc(100vh - 64px)',
+        height: 'calc(100dvh - 64px)',
         background: '#09090b',
         overflow: 'hidden',
       }}

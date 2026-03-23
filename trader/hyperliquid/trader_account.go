@@ -45,8 +45,6 @@ func (t *HyperliquidTrader) GetBalance() (map[string]interface{}, error) {
 	// Step 3: Dynamically select correct summary based on margin mode (CrossMarginSummary or MarginSummary)
 	var accountValue, totalMarginUsed float64
 	var summaryType string
-	var summary interface{}
-	_, _ = summaryType, summary
 
 	if t.isCrossMargin {
 		// Cross margin mode: use CrossMarginSummary

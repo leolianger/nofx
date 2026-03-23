@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"nofx/provider/coinank/coinank_enum"
+	"nofx/safe"
 
 	"golang.org/x/net/websocket"
 )
@@ -79,7 +80,7 @@ func depth_ws(ctx context.Context) (*websocket.Conn, <-chan *WsResult[DepthV3], 
 		return nil, nil, err
 	}
 	ch := make(chan *WsResult[DepthV3], 1024)
-	go depth_read(conn, ch)
+	safe.GoNamed("coinank-depth-ws-reader", func() { depth_read(conn, ch) })
 	return conn, ch, nil
 }
 

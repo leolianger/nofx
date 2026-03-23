@@ -21,27 +21,23 @@ const SYMBOL_ICONS: Record<string, string> = {
 export function MarketTicker() {
   const [tickers, setTickers] = useState<Record<string, TickerData>>({})
   const [loading, setLoading] = useState(true)
-  const [, setRefreshing] = useState(false)
 
   const fetchTickers = async () => {
     try {
-      const results = await Promise.all(
-        SYMBOLS.map(async (symbol) => {
-          const res = await fetch(`/api/agent/ticker?symbol=${symbol}`)
-          const data = await res.json()
-          return { symbol, ...data }
-        })
-      )
+      // Batch fetch: single API call for all symbols
+      const res = await fetch(`/api/agent/tickers?symbols=${SYMBOLS.join(',')}`)
+      const data = await res.json()
       const map: Record<string, TickerData> = {}
-      results.forEach((r) => {
-        if (r.lastPrice) map[r.symbol] = r
-      })
+      if (Array.isArray(data)) {
+        data.forEach((r: TickerData) => {
+          if (r.lastPrice && r.symbol) map[r.symbol] = r
+        })
+      }
       setTickers(map)
     } catch {
-      // ignore
+      // ignore — will retry on next interval
     } finally {
       setLoading(false)
-      setRefreshing(false)
     }
   }
 

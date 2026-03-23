@@ -86,7 +86,7 @@ func ws(ctx context.Context) (*websocket.Conn, <-chan string, error) {
 		return nil, nil, err
 	}
 	ch := make(chan string, 1024)
-	go read(conn, ch)
+	safe.GoNamed("coinank-ws-reader", func() { read(conn, ch) })
 	return conn, ch, nil
 }
 

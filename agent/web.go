@@ -187,6 +187,58 @@ func (w *WebHandler) HandleTicker(rw http.ResponseWriter, r *http.Request) {
 	proxyBinance(rw, fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s", symbol))
 }
 
+// HandleTickers handles GET /api/agent/tickers?symbols=BTCUSDT,ETHUSDT,SOLUSDT
+// Batch endpoint: fetches multiple tickers in one API call to Binance.
+func (w *WebHandler) HandleTickers(rw http.ResponseWriter, r *http.Request) {
+	symbolsParam := r.URL.Query().Get("symbols")
+	if symbolsParam == "" {
+		symbolsParam = "BTCUSDT,ETHUSDT,SOLUSDT"
+	}
+
+	// Validate and build JSON array of symbols
+	symbols := []string{}
+	for _, s := range splitAndTrim(symbolsParam) {
+		if validSymbolRe.MatchString(s) {
+			symbols = append(symbols, `"`+s+`"`)
+		}
+	}
+	if len(symbols) == 0 {
+		writeJSON(rw, 400, map[string]string{"error": "no valid symbols"})
+		return
+	}
+	if len(symbols) > 20 {
+		writeJSON(rw, 400, map[string]string{"error": "max 20 symbols"})
+		return
+	}
+
+	// Binance supports batch ticker: /fapi/v1/ticker/24hr with multiple symbols
+	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[%s]", joinStrings(symbols, ","))
+	proxyBinance(rw, url)
+}
+
+// splitAndTrim splits a comma-separated string and trims whitespace.
+func splitAndTrim(s string) []string {
+	parts := []string{}
+	for _, p := range regexp.MustCompile(`\s*,\s*`).Split(s, -1) {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return parts
+}
+
+// joinStrings joins strings with a separator.
+func joinStrings(ss []string, sep string) string {
+	result := ""
+	for i, s := range ss {
+		if i > 0 {
+			result += sep
+		}
+		result += s
+	}
+	return result
+}
+
 func proxyBinance(rw http.ResponseWriter, url string) {
 	resp, err := binanceClient.Get(url)
 	if err != nil {

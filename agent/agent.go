@@ -335,27 +335,45 @@ func (a *Agent) thinkAndActStream(ctx context.Context, userID int64, lang, text 
 
 	tools := agentTools()
 
-	// Tool-calling loop: use non-streaming to detect tool calls.
-	// Once no tool calls remain, stream the final response for real-time UX.
+	// Tool-calling loop with streaming:
+	// 1. Non-streaming call with tools to detect if LLM needs tools
+	// 2. If tools needed: execute them, loop back
+	// 3. When done (no more tools): stream the final response via SSE
 	const maxToolRounds = 5
 	toolsUsed := false
+
 	for round := 0; round < maxToolRounds; round++ {
 		req := &mcp.Request{Messages: messages, Tools: tools, ToolChoice: "auto"}
 		resp, err := a.aiClient.CallWithRequestFull(req)
 		if err != nil {
 			a.logger.Error("LLM call failed (stream)", "error", err, "round", round)
+			if round == 0 {
+				// First round failed — try streaming without tools as fallback
+				streamReq := &mcp.Request{Messages: messages}
+				streamText, streamErr := a.aiClient.CallWithRequestStream(streamReq, func(chunk string) {
+					onEvent(StreamEventDelta, chunk)
+				})
+				if streamErr != nil {
+					return a.noAIFallback(lang, text)
+				}
+				a.history.Add(userID, "assistant", streamText)
+				return streamText, nil
+			}
 			return a.noAIFallback(lang, text)
 		}
 
-		// No tool calls → final text response
+		// No tool calls → done with tool loop
 		if len(resp.ToolCalls) == 0 {
 			if !toolsUsed {
-				// No tools at all — response was fast, just return it
+				// No tools were ever called — the non-streaming probe already has the answer.
+				// Emit as a single delta so frontend renders it immediately.
+				onEvent(StreamEventDelta, resp.Content)
 				a.history.Add(userID, "assistant", resp.Content)
 				return resp.Content, nil
 			}
-			// After tool rounds, we already have the response (non-streamed).
-			// Still return it — the SSE handler sends it as "done".
+			// Tools were used in previous rounds, LLM gave final answer without streaming.
+			// This shouldn't normally happen (we break and stream below), but handle it.
+			onEvent(StreamEventDelta, resp.Content)
 			a.history.Add(userID, "assistant", resp.Content)
 			return resp.Content, nil
 		}
@@ -375,9 +393,22 @@ func (a *Agent) thinkAndActStream(ctx context.Context, userID int64, lang, text 
 			result := a.handleToolCall(ctx, userID, lang, tc)
 			messages = append(messages, mcp.Message{Role: "tool", Content: result, ToolCallID: tc.ID})
 		}
+
+		// After tool execution, stream the next LLM response for real-time UX.
+		// Omit tools so LLM can't start another tool round — it must produce text.
+		streamReq := &mcp.Request{Messages: messages}
+		streamText, streamErr := a.aiClient.CallWithRequestStream(streamReq, func(chunk string) {
+			onEvent(StreamEventDelta, chunk)
+		})
+		if streamErr != nil {
+			a.logger.Error("stream post-tool response failed", "error", streamErr, "round", round)
+			return a.noAIFallback(lang, text)
+		}
+		a.history.Add(userID, "assistant", streamText)
+		return streamText, nil
 	}
 
-	// Exhausted tool rounds — stream the final synthesis response
+	// Exhausted all tool rounds — stream the final synthesis response
 	finalReq := &mcp.Request{Messages: messages}
 	finalText, err := a.aiClient.CallWithRequestStream(finalReq, func(chunk string) {
 		onEvent(StreamEventDelta, chunk)

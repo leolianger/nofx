@@ -14,6 +14,17 @@ import (
 	"golang.org/x/text/transform"
 )
 
+// stockHTTPClient is a shared HTTP client for stock API requests.
+// Reused across calls for connection pooling.
+var stockHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 // StockQuote holds real-time stock data.
 type StockQuote struct {
 	Name      string
@@ -54,7 +65,7 @@ var knownStocks = map[string]string{
 	"小米": "hk01810", "京东": "hk09618", "网易": "hk09999",
 	"百度": "hk09888", "快手": "hk01024", "哔哩哔哩": "hk09626",
 	"理想汽车": "hk02015", "蔚来": "hk09866", "小鹏汽车": "hk09868",
-	"华为": "hk00700", // fallback to tencent for now
+	// 华为 is not publicly listed — removed incorrect Tencent fallback
 	// 美股
 	"苹果": "gb_aapl", "特斯拉": "gb_tsla", "英伟达": "gb_nvda",
 	"微软": "gb_msft", "谷歌": "gb_googl", "亚马逊": "gb_amzn",
@@ -127,12 +138,15 @@ func searchStock(keyword string) ([]SearchResult, error) {
 	req, _ := http.NewRequest("GET", u, nil)
 	req.Header.Set("Referer", "https://finance.sina.com.cn")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := stockHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("stock search API returned status %d", resp.StatusCode)
+	}
 
 	reader := transform.NewReader(io.LimitReader(resp.Body, 256*1024), simplifiedchinese.GBK.NewDecoder())
 	body, err := safe.ReadAllLimited(reader)
@@ -283,10 +297,13 @@ func fetchStockQuote(code string) (*StockQuote, error) {
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Referer", "https://finance.sina.com.cn")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := stockHTTPClient.Do(req)
 	if err != nil { return nil, err }
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("stock quote API returned status %d", resp.StatusCode)
+	}
 
 	reader := transform.NewReader(io.LimitReader(resp.Body, 256*1024), simplifiedchinese.GBK.NewDecoder())
 	body, err := safe.ReadAllLimited(reader)
