@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"nofx/auth"
+	"nofx/config"
 	"nofx/crypto"
 	"nofx/logger"
 	"nofx/manager"
@@ -56,12 +57,44 @@ func NewServer(traderManager *manager.TraderManager, st *store.Store, cryptoServ
 	return s
 }
 
-// corsMiddleware CORS middleware
+// corsMiddleware CORS middleware with configurable allowed origins.
+// Set CORS_ALLOWED_ORIGINS env var to a comma-separated list of origins
+// (e.g. "http://localhost:5173,https://nofx.example.com").
+// If empty or "*", all origins are allowed (development mode).
 func corsMiddleware() gin.HandlerFunc {
+	cfg := config.Get()
+	raw := strings.TrimSpace(cfg.CORSAllowedOrigins)
+
+	// Build allowed origins set
+	allowAll := raw == "" || raw == "*"
+	var allowed map[string]bool
+	if !allowAll {
+		allowed = make(map[string]bool)
+		for _, o := range strings.Split(raw, ",") {
+			o = strings.TrimSpace(o)
+			if o != "" {
+				allowed[o] = true
+			}
+		}
+		if len(allowed) == 0 {
+			allowAll = true
+		}
+	}
+
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := c.Request.Header.Get("Origin")
+		if allowAll {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		} else if origin != "" && allowed[origin] {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Vary", "Origin")
+		} else if origin != "" {
+			// Origin not in allow list — reject preflight, allow simple requests
+			// but without CORS headers the browser will block the response.
+		}
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusOK)

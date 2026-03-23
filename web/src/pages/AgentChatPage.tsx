@@ -15,6 +15,7 @@ import {
   Search,
 } from 'lucide-react'
 import { useLanguage } from '../contexts/LanguageContext'
+import { useAuth } from '../contexts/AuthContext'
 import { MarketTicker } from '../components/agent/MarketTicker'
 import { PositionsPanel } from '../components/agent/PositionsPanel'
 import { TraderStatusPanel } from '../components/agent/TraderStatusPanel'
@@ -227,6 +228,7 @@ interface SuggestionCard {
 
 export function AgentChatPage() {
   const { language } = useLanguage()
+  const { token } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 1024)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -315,8 +317,11 @@ export function AgentChatPage() {
     try {
       const res = await fetch('/api/agent/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg, user_id: 1, lang: language }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ message: msg, lang: language }),
       })
       const data = await res.json()
       const responseText = data.response || data.error || 'No response'

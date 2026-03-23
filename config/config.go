@@ -38,6 +38,11 @@ type Config struct {
 	// Set EXPERIENCE_IMPROVEMENT=false to disable
 	ExperienceImprovement bool
 
+	// CORS configuration
+	// Comma-separated list of allowed origins. Empty or "*" means allow all.
+	// Example: "http://localhost:5173,https://nofx.example.com"
+	CORSAllowedOrigins string
+
 	// Market data provider API keys
 	AlpacaAPIKey    string // Alpaca API key for US stocks
 	AlpacaSecretKey string // Alpaca secret key
@@ -85,6 +90,9 @@ func Init() {
 	if v := os.Getenv("EXPERIENCE_IMPROVEMENT"); v != "" {
 		cfg.ExperienceImprovement = strings.ToLower(v) != "false"
 	}
+
+	// CORS allowed origins (comma-separated, empty = allow all)
+	cfg.CORSAllowedOrigins = os.Getenv("CORS_ALLOWED_ORIGINS")
 
 	// Market data provider API keys
 	cfg.AlpacaAPIKey = os.Getenv("ALPACA_API_KEY")
