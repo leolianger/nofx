@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"nofx/provider/coinank"
 	"nofx/provider/coinank/coinank_enum"
+	"nofx/safe"
 	"strconv"
 	"strings"
 
@@ -105,7 +106,7 @@ func read(conn *websocket.Conn, ch chan string) {
 func handleResponse(ch <-chan string, needKline bool, needTicker bool) (<-chan *WsResult[coinank.KlineResult], <-chan *WsResult[KlineTickers]) {
 	klineCh := make(chan *WsResult[coinank.KlineResult], 1024)
 	tickersCh := make(chan *WsResult[KlineTickers], 1024)
-	go func() {
+	safe.GoNamed("coinank-ws-handler", func() {
 		if needKline {
 			defer close(klineCh)
 		} else {
@@ -147,7 +148,7 @@ func handleResponse(ch <-chan string, needKline bool, needTicker bool) (<-chan *
 				}
 			}
 		}
-	}()
+	})
 	return klineCh, tickersCh
 }
 

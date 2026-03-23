@@ -273,6 +273,16 @@ func (tm *TraderManager) getConcurrentTraderData(traders []*trader.AutoTrader) [
 	// Concurrently fetch data for each trader
 	for i, t := range traders {
 		go func(index int, trader *trader.AutoTrader) {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("🔥 [trader-data-fetch] panic for trader %s: %v", trader.GetName(), r)
+					resultChan <- traderResult{index: index, data: map[string]interface{}{
+						"trader_id":  trader.GetID(),
+						"trader_name": trader.GetName(),
+						"error":      "internal panic",
+					}}
+				}
+			}()
 			// Set timeout to 10 seconds for single trader (increased from 3s for DEX reliability)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -281,14 +291,14 @@ func (tm *TraderManager) getConcurrentTraderData(traders []*trader.AutoTrader) [
 			accountChan := make(chan map[string]interface{}, 1)
 			errorChan := make(chan error, 1)
 
-			go func() {
+			safe.GoNamed("trader-account-info", func() {
 				account, err := trader.GetAccountInfo()
 				if err != nil {
 					errorChan <- err
 				} else {
 					accountChan <- account
 				}
-			}()
+			})
 
 			status := trader.GetStatus()
 			var traderData map[string]interface{}

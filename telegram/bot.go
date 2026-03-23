@@ -227,6 +227,13 @@ func runBot(token string, cfg *config.Config, st *store.Store) bool {
 
 		// ── AI agent ─────────────────────────────────────────────────────────
 		go func(chatID int64, text string) {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("🔥 [telegram-ai-agent] panic: %v", r)
+					msg := tgbotapi.NewMessage(chatID, "⚠️ Internal error. Please try again.")
+					bot.Send(msg) //nolint:errcheck
+				}
+			}()
 			sent, err := bot.Send(tgbotapi.NewMessage(chatID, "⏳"))
 			placeholderID := 0
 			if err == nil {

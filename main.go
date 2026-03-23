@@ -10,6 +10,7 @@ import (
 	"nofx/telemetry"
 	"nofx/logger"
 	"nofx/manager"
+	"nofx/safe"
 	_ "nofx/mcp/payment"
 	_ "nofx/mcp/provider"
 	"nofx/store"
@@ -136,11 +137,11 @@ func main() {
 	telegramReloadCh := make(chan struct{}, 1)
 	server.SetTelegramReloadCh(telegramReloadCh)
 
-	go func() {
+	safe.GoNamed("api-server", func() {
 		if err := server.Start(); err != nil {
 			logger.Fatalf("❌ Failed to start API server: %v", err)
 		}
-	}()
+	})
 
 	// Start NOFXi Agent (proactive intelligence layer) — must be created BEFORE Telegram bot
 	nofxiAgent := nofxiagent.New(traderManager, st, nil, slog.Default())

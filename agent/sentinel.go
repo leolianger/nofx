@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"nofx/safe"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,7 +62,7 @@ func NewSentinel(symbols []string, cb SignalCallback, logger *slog.Logger) *Sent
 }
 
 func (s *Sentinel) Start() {
-	go func() {
+	safe.GoNamed("sentinel", func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		s.scan()
@@ -73,7 +74,7 @@ func (s *Sentinel) Start() {
 				s.scan()
 			}
 		}
-	}()
+	})
 }
 
 func (s *Sentinel) Stop()                            { close(s.stopCh) }

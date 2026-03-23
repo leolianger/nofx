@@ -3,6 +3,7 @@ package aster
 import (
 	"fmt"
 	"nofx/logger"
+	"nofx/safe"
 	"nofx/market"
 	"nofx/store"
 	"sort"
@@ -182,12 +183,12 @@ func deriveAsterOrderAction(side, positionSide string, realizedPnL float64) stri
 // StartOrderSync starts background order sync task for Aster
 func (t *AsterTrader) StartOrderSync(traderID string, exchangeID string, exchangeType string, st *store.Store, interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	go func() {
+	safe.GoNamed("aster-order-sync", func() {
 		for range ticker.C {
 			if err := t.SyncOrdersFromAster(traderID, exchangeID, exchangeType, st); err != nil {
 				logger.Infof("⚠️  Aster order sync failed: %v", err)
 			}
 		}
-	}()
+	})
 	logger.Infof("🔄 Aster order sync started (interval: %v)", interval)
 }

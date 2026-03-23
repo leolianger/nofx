@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"nofx/logger"
 	"nofx/market"
+	"nofx/safe"
 	"nofx/store"
 	"sort"
 	"strconv"
@@ -300,12 +301,12 @@ func (t *BybitTrader) SyncOrdersFromBybit(traderID string, exchangeID string, ex
 // StartOrderSync starts background order sync task for Bybit
 func (t *BybitTrader) StartOrderSync(traderID string, exchangeID string, exchangeType string, st *store.Store, interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	go func() {
+	safe.GoNamed("bybit-order-sync", func() {
 		for range ticker.C {
 			if err := t.SyncOrdersFromBybit(traderID, exchangeID, exchangeType, st); err != nil {
 				logger.Infof("⚠️  Bybit order sync failed: %v", err)
 			}
 		}
-	}()
+	})
 	logger.Infof("🔄 Bybit order sync started (interval: %v)", interval)
 }

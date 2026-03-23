@@ -3,6 +3,7 @@ package trader
 import (
 	"fmt"
 	"nofx/logger"
+	"nofx/safe"
 	"strings"
 	"time"
 )
@@ -10,7 +11,7 @@ import (
 // startDrawdownMonitor starts drawdown monitoring
 func (at *AutoTrader) startDrawdownMonitor() {
 	at.monitorWg.Add(1)
-	go func() {
+	safe.GoNamed("drawdown-monitor", func() {
 		defer at.monitorWg.Done()
 
 		ticker := time.NewTicker(1 * time.Minute) // Check every minute
@@ -27,7 +28,7 @@ func (at *AutoTrader) startDrawdownMonitor() {
 				return
 			}
 		}
-	}()
+	})
 }
 
 // checkPositionDrawdown checks position drawdown situation

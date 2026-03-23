@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nofx/logger"
 	"nofx/market"
+	"nofx/safe"
 	"nofx/store"
 	"sort"
 	"strings"
@@ -147,7 +148,7 @@ func (t *LighterTraderV2) SyncOrdersFromLighter(traderID string, exchangeID stri
 // StartOrderSync starts background order sync task
 func (t *LighterTraderV2) StartOrderSync(traderID string, exchangeID string, exchangeType string, st *store.Store, interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	go func() {
+	safe.GoNamed("lighter-order-sync", func() {
 		for range ticker.C {
 			if err := t.SyncOrdersFromLighter(traderID, exchangeID, exchangeType, st); err != nil {
 				// Only log non-404 errors to reduce log spam
@@ -156,6 +157,6 @@ func (t *LighterTraderV2) StartOrderSync(traderID string, exchangeID string, exc
 				}
 			}
 		}
-	}()
+	})
 	logger.Infof("🔄 Lighter order+position sync started (interval: %v)", interval)
 }

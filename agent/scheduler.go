@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"nofx/safe"
 	"strings"
 	"time"
 )
@@ -19,7 +20,7 @@ func NewScheduler(a *Agent, l *slog.Logger) *Scheduler {
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
-	go func() {
+	safe.GoNamed("agent-scheduler", func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		lastReport := time.Time{}
@@ -50,7 +51,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 func (s *Scheduler) Stop() { close(s.stopCh) }

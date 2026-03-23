@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"nofx/safe"
 	"sync"
 	"time"
 )
@@ -108,9 +109,9 @@ func TrackTrade(event TradeEvent) {
 	}
 
 	// Send asynchronously to not block trading
-	go func() {
+	safe.Go(func() {
 		_ = sendTradeEvent(event)
-	}()
+	})
 }
 
 // sendTradeEvent sends the trade event to GA4
@@ -165,7 +166,7 @@ func TrackStartup(version string) {
 		return
 	}
 
-	go func() {
+	safe.Go(func() {
 		client.mu.RLock()
 		installationID := client.installationID
 		client.mu.RUnlock()
@@ -194,7 +195,7 @@ func TrackStartup(version string) {
 				resp.Body.Close()
 			}
 		}
-	}()
+	})
 }
 
 func TrackAIUsage(event AIUsageEvent) {
@@ -202,7 +203,7 @@ func TrackAIUsage(event AIUsageEvent) {
 		return
 	}
 
-	go func() {
+	safe.Go(func() {
 		client.mu.RLock()
 		installationID := client.installationID
 		client.mu.RUnlock()
@@ -238,5 +239,5 @@ func TrackAIUsage(event AIUsageEvent) {
 				resp.Body.Close()
 			}
 		}
-	}()
+	})
 }

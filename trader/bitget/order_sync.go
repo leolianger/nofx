@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nofx/logger"
 	"nofx/market"
+	"nofx/safe"
 	"nofx/store"
 	"sort"
 	"strconv"
@@ -281,12 +282,12 @@ func (t *BitgetTrader) SyncOrdersFromBitget(traderID string, exchangeID string, 
 // StartOrderSync starts background order sync task for Bitget
 func (t *BitgetTrader) StartOrderSync(traderID string, exchangeID string, exchangeType string, st *store.Store, interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	go func() {
+	safe.GoNamed("bitget-order-sync", func() {
 		for range ticker.C {
 			if err := t.SyncOrdersFromBitget(traderID, exchangeID, exchangeType, st); err != nil {
 				logger.Infof("⚠️  Bitget order sync failed: %v", err)
 			}
 		}
-	}()
+	})
 	logger.Infof("🔄 Bitget order sync started (interval: %v)", interval)
 }

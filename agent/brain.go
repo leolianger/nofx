@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"nofx/safe"
 	"strings"
 	"sync"
 	"time"
@@ -49,7 +50,7 @@ func (b *Brain) HandleSignal(sig Signal) {
 
 func (b *Brain) StartNewsScan(interval time.Duration) {
 	seen := make(map[string]bool)
-	go func() {
+	safe.GoNamed("brain-news-scan", func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -59,7 +60,7 @@ func (b *Brain) StartNewsScan(interval time.Duration) {
 				b.scanNews(seen)
 			}
 		}
-	}()
+	})
 }
 
 func (b *Brain) scanNews(seen map[string]bool) {
@@ -117,7 +118,7 @@ func (b *Brain) scanNews(seen map[string]bool) {
 }
 
 func (b *Brain) StartMarketBriefs(hours []int) {
-	go func() {
+	safe.GoNamed("brain-market-briefs", func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		sent := make(map[string]bool)
@@ -134,7 +135,7 @@ func (b *Brain) StartMarketBriefs(hours []int) {
 				}
 			}
 		}
-	}()
+	})
 }
 
 func (b *Brain) sendBrief(hour int) {

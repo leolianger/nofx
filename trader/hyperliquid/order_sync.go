@@ -3,6 +3,7 @@ package hyperliquid
 import (
 	"fmt"
 	"nofx/logger"
+	"nofx/safe"
 	"nofx/market"
 	"nofx/store"
 	"sort"
@@ -138,12 +139,12 @@ func (t *HyperliquidTrader) SyncOrdersFromHyperliquid(traderID string, exchangeI
 // StartOrderSync starts background order sync task
 func (t *HyperliquidTrader) StartOrderSync(traderID string, exchangeID string, exchangeType string, st *store.Store, interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	go func() {
+	safe.GoNamed("hyperliquid-order-sync", func() {
 		for range ticker.C {
 			if err := t.SyncOrdersFromHyperliquid(traderID, exchangeID, exchangeType, st); err != nil {
 				logger.Infof("⚠️  Hyperliquid order sync failed: %v", err)
 			}
 		}
-	}()
+	})
 	logger.Infof("🔄 Hyperliquid order sync started (interval: %v)", interval)
 }

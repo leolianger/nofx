@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"nofx/safe"
 	"sync"
 	"time"
 
@@ -35,13 +36,13 @@ func NewLoginRateLimiter() *LoginRateLimiter {
 	}
 
 	// Clean up stale entries every 10 minutes
-	go func() {
+	safe.GoNamed("rate-limiter-cleanup", func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			rl.cleanup()
 		}
-	}()
+	})
 
 	return rl
 }

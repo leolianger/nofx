@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"nofx/safe"
 	"strings"
 	"time"
 )
@@ -687,7 +688,7 @@ func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	resetCh := make(chan struct{}, 1)
-	go func() {
+	safe.GoNamed("mcp-stream-idle-watchdog", func() {
 		t := time.NewTimer(idleTimeout)
 		defer t.Stop()
 		for {
@@ -708,7 +709,7 @@ func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) 
 				t.Reset(idleTimeout)
 			}
 		}
-	}()
+	})
 
 	httpReq = httpReq.WithContext(ctx)
 	resp, err := client.HTTPClient.Do(httpReq)

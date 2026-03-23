@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nofx/logger"
 	"nofx/market"
+	"nofx/safe"
 	"nofx/store"
 	"nofx/trader/types"
 	"sort"
@@ -351,21 +352,21 @@ func (t *FuturesTrader) determineOrderAction(side, positionSide string, realized
 // StartOrderSync starts background order sync task for Binance
 func (t *FuturesTrader) StartOrderSync(traderID string, exchangeID string, exchangeType string, st *store.Store, interval time.Duration) {
 	// Run first sync immediately
-	go func() {
+	safe.GoNamed("binance-order-sync-initial", func() {
 		logger.Infof("🔄 Running initial Binance order sync...")
 		if err := t.SyncOrdersFromBinance(traderID, exchangeID, exchangeType, st); err != nil {
 			logger.Infof("⚠️  Initial Binance order sync failed: %v", err)
 		}
-	}()
+	})
 
 	// Then run periodically
 	ticker := time.NewTicker(interval)
-	go func() {
+	safe.GoNamed("binance-order-sync", func() {
 		for range ticker.C {
 			if err := t.SyncOrdersFromBinance(traderID, exchangeID, exchangeType, st); err != nil {
 				logger.Infof("⚠️  Binance order sync failed: %v", err)
 			}
 		}
-	}()
+	})
 	logger.Infof("🔄 Binance order sync started (interval: %v)", interval)
 }
