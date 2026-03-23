@@ -11,21 +11,23 @@
 - [DONE] Record login success/failure for rate limiter tracking
 - [DONE] Sanitize markdown link URLs in frontend (prevent javascript: XSS)
 
+### 2026-03-23 09:52 — CORS & Response Limits
+- [DONE] Add configurable CORS origins (`CORS_ALLOWED_ORIGINS` env var) — replaces wildcard `*`
+- [DONE] Add `io.LimitReader` to sentinel.go (was unbounded, now 256KB)
+- [DONE] Fix news `seen` map eviction: keep half instead of clearing all (was losing dedup state)
+- [DONE] Agent chat endpoint already behind auth middleware (verified, was falsely flagged as pending)
+
 ## Pending
 
 ### Security
 - [PENDING] Investigate GitHub Dependabot's 21 reported vulnerabilities (13 high, 7 moderate, 1 low)
-- [PENDING] Add CSRF protection or tighten CORS from wildcard `*` to specific origins
-- [PENDING] Agent chat endpoint (`/api/agent/chat`) is not behind auth middleware — should require authentication
 
 ### Code Quality
-- [PENDING] The `resolveStockCodeDynamic` function at line 210 of `agent/stock.go` also has unlimited io.ReadAll (line 136)
-- [PENDING] `context.Background()` used in ~30+ exchange trader calls — should propagate request context for proper cancellation
+- [PENDING] `context.Background()` used in ~69 exchange/trader calls — should propagate request context for proper cancellation
 - [PENDING] `AgentChatPage.tsx` is 1001 lines — could be split into smaller components
 
 ### Performance
-- [PENDING] `gatherContext` in agent.go iterates all traders and positions on every message — consider caching
-- [PENDING] News scan `seen` map grows unbounded, only reset at 1000 entries — use TTL-based expiry
+- [PENDING] `gatherContext` in agent.go iterates all traders and positions on every message — consider caching (low priority: only triggered per user message)
 
 ### Features
 - [PENDING] Agent chat has fake streaming (word-by-word setTimeout) — implement real SSE streaming
