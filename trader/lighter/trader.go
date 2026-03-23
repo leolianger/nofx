@@ -2,7 +2,6 @@ package lighter
 
 import (
 	"nofx/safe"
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -59,7 +58,6 @@ type AccountResponse struct {
 
 // LighterTraderV2 New implementation using official lighter-go SDK
 type LighterTraderV2 struct {
-	ctx        context.Context
 	walletAddr string // Ethereum wallet address
 
 	client  *http.Client
@@ -127,7 +125,6 @@ func NewLighterTraderV2(walletAddr, apiKeyPrivateKeyHex string, apiKeyIndex int,
 	httpClient := lighterHTTP.NewClient(baseURL)
 
 	trader := &LighterTraderV2{
-		ctx:        context.Background(),
 		walletAddr: walletAddr,
 		client: &http.Client{
 			Timeout: 30 * time.Second,

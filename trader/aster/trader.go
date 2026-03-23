@@ -2,7 +2,6 @@ package aster
 
 import (
 	"nofx/safe"
-	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
@@ -25,7 +24,6 @@ import (
 
 // AsterTrader Aster trading platform implementation
 type AsterTrader struct {
-	ctx        context.Context
 	user       string            // Main wallet address (ERC20)
 	signer     string            // API wallet address
 	privateKey *ecdsa.PrivateKey // API wallet private key
@@ -69,7 +67,6 @@ func NewAsterTrader(user, signer, privateKeyHex string) (*AsterTrader, error) {
 	}
 
 	return &AsterTrader{
-		ctx:             context.Background(),
 		user:            user,
 		signer:          signer,
 		privateKey:      privKey,

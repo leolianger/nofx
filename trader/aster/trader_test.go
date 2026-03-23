@@ -1,7 +1,6 @@
 package aster
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -194,7 +193,6 @@ func NewAsterTraderTestSuite(t *testing.T) *AsterTraderTestSuite {
 
 	// Create mock trader using mock server's URL
 	traderInstance := &AsterTrader{
-		ctx:             context.Background(),
 		user:            "0x1234567890123456789012345678901234567890",
 		signer:          "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
 		privateKey:      privateKey,

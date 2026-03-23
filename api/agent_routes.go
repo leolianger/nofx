@@ -11,6 +11,7 @@ import (
 func (s *Server) RegisterAgentHandler(h *agent.WebHandler) {
 	// Chat requires auth — can trigger trades and access account data
 	s.router.POST("/api/agent/chat", s.authMiddleware(), gin.WrapF(h.HandleChat))
+	s.router.POST("/api/agent/chat/stream", s.authMiddleware(), gin.WrapF(h.HandleChatStream))
 	// Public endpoints — read-only market data
 	s.router.GET("/api/agent/health", gin.WrapF(h.HandleHealth))
 	s.router.GET("/api/agent/klines", gin.WrapF(h.HandleKlines))

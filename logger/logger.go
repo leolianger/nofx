@@ -87,6 +87,8 @@ func Init(cfg *Config) error {
 	// Setup log file output (write to both stdout and file)
 	logDir := "data"
 	if err := os.MkdirAll(logDir, 0755); err == nil {
+		// Clean up logs older than 30 days on startup
+		cleanOldLogs(logDir, 30)
 		logFileName := filepath.Join(logDir, fmt.Sprintf("nofx_%s.log", time.Now().Format("2006-01-02")))
 		f, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err == nil {
@@ -109,6 +111,38 @@ func Init(cfg *Config) error {
 // Suitable for scenarios that only need basic functionality
 func InitWithSimpleConfig(level string) error {
 	return Init(&Config{Level: level})
+}
+
+// cleanOldLogs removes log files older than maxAge days from the log directory.
+// Called automatically during Init to prevent unbounded disk usage.
+func cleanOldLogs(logDir string, maxAgeDays int) {
+	cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Match nofx_YYYY-MM-DD.log pattern
+		if !strings.HasPrefix(name, "nofx_") || !strings.HasSuffix(name, ".log") {
+			continue
+		}
+		dateStr := strings.TrimPrefix(name, "nofx_")
+		dateStr = strings.TrimSuffix(dateStr, ".log")
+		t, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			continue
+		}
+		if t.Before(cutoff) {
+			path := filepath.Join(logDir, name)
+			if removeErr := os.Remove(path); removeErr == nil {
+				fmt.Printf("[logger] cleaned old log: %s\n", name)
+			}
+		}
+	}
 }
 
 // Shutdown gracefully shuts down the logger

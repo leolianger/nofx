@@ -640,7 +640,38 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 }
 
 // Start Start server
+// cleanupOldData removes old decision records and equity snapshots on startup
+// to prevent unbounded database growth.
+func (s *Server) cleanupOldData() {
+	if s.store == nil {
+		return
+	}
+
+	// Clean decision records older than 90 days
+	if decisionStore := s.store.Decision(); decisionStore != nil {
+		deleted, err := decisionStore.CleanOldRecords("", 90)
+		if err != nil {
+			logger.Warnf("⚠️ Failed to clean old decision records: %v", err)
+		} else if deleted > 0 {
+			logger.Infof("🧹 Cleaned %d old decision records (>90 days)", deleted)
+		}
+	}
+
+	// Clean equity snapshots older than 180 days
+	if equityStore := s.store.Equity(); equityStore != nil {
+		deleted, err := equityStore.CleanOldRecords("", 180)
+		if err != nil {
+			logger.Warnf("⚠️ Failed to clean old equity snapshots: %v", err)
+		} else if deleted > 0 {
+			logger.Infof("🧹 Cleaned %d old equity snapshots (>180 days)", deleted)
+		}
+	}
+}
+
 func (s *Server) Start() error {
+	// Clean up old data on startup
+	s.cleanupOldData()
+
 	addr := fmt.Sprintf(":%d", s.port)
 	logger.Infof("🌐 API server starting at http://localhost%s", addr)
 	logger.Infof("📊 API Documentation:")

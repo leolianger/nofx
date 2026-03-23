@@ -247,12 +247,16 @@ func (s *DecisionStore) GetRecordsByDate(traderID string, date time.Time) ([]*De
 	return records, nil
 }
 
-// CleanOldRecords cleans old records from N days ago
+// CleanOldRecords cleans old records from N days ago.
+// If traderID is empty, cleans records for ALL traders.
 func (s *DecisionStore) CleanOldRecords(traderID string, days int) (int64, error) {
 	cutoffTime := time.Now().AddDate(0, 0, -days)
 
-	result := s.db.Where("trader_id = ? AND timestamp < ?", traderID, cutoffTime).
-		Delete(&DecisionRecordDB{})
+	query := s.db.Where("timestamp < ?", cutoffTime)
+	if traderID != "" {
+		query = query.Where("trader_id = ?", traderID)
+	}
+	result := query.Delete(&DecisionRecordDB{})
 	if result.Error != nil {
 		return 0, fmt.Errorf("failed to clean old records: %w", result.Error)
 	}

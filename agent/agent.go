@@ -151,6 +151,45 @@ func (a *Agent) HandleMessage(ctx context.Context, userID int64, text string) (s
 	return a.thinkAndAct(ctx, userID, lang, text)
 }
 
+// HandleMessageStream is like HandleMessage but streams the final LLM response via SSE.
+// onEvent is called with (eventType, data) — see StreamEvent* constants.
+// Non-streamable responses (commands, trade confirmations) return immediately without events.
+func (a *Agent) HandleMessageStream(ctx context.Context, userID int64, text string, onEvent func(event, data string)) (string, error) {
+	lang := a.config.Language
+	if strings.HasPrefix(text, "[lang:") {
+		if end := strings.Index(text, "] "); end > 0 {
+			lang = text[6:end]; text = text[end+2:]
+		}
+	}
+
+	a.logger.Info("message (stream)", "user_id", userID, "text", text)
+
+	if resp, handled := a.handleSetupFlow(userID, text, lang); handled {
+		return resp, nil
+	}
+	if text == "/help" || text == "/start" {
+		return a.msg(lang, "help"), nil
+	}
+	if text == "/status" {
+		return a.handleStatus(lang), nil
+	}
+	if text == "/clear" {
+		a.history.Clear(userID)
+		if lang == "zh" { return "🧹 对话记忆已清除。", nil }
+		return "🧹 Conversation history cleared.", nil
+	}
+	if resp, handled := a.handleTradeConfirmation(ctx, userID, text, lang); handled {
+		return resp, nil
+	}
+	if trade := parseTradeCommand(text); trade != nil {
+		a.pending.Add(trade)
+		a.pending.CleanExpired()
+		return formatTradeConfirmation(trade, lang), nil
+	}
+
+	return a.thinkAndActStream(ctx, userID, lang, text, onEvent)
+}
+
 // thinkAndAct sends the user message to LLM with full context and tools.
 // The LLM decides what to do — analyze, query, trade, or just chat.
 // Supports a tool-calling loop: LLM can call tools, get results, and continue.
@@ -261,6 +300,94 @@ func (a *Agent) thinkAndAct(ctx context.Context, userID int64, lang, text string
 	}
 	a.history.Add(userID, "assistant", finalResp)
 	return finalResp, nil
+}
+
+// StreamEvent types sent via SSE to the frontend.
+const (
+	StreamEventTool  = "tool"  // Tool is being called (shows status to user)
+	StreamEventDelta = "delta" // Text chunk from LLM streaming
+	StreamEventDone  = "done"  // Stream complete
+	StreamEventError = "error" // Error occurred
+)
+
+// thinkAndActStream is like thinkAndAct but streams the final LLM response via SSE.
+// Tool-calling rounds use non-streaming CallWithRequestFull.
+// Once tools are done, the final response is streamed via onEvent("delta", accumulated_text).
+// onEvent("tool", toolName) is sent when a tool is being called.
+func (a *Agent) thinkAndActStream(ctx context.Context, userID int64, lang, text string, onEvent func(event, data string)) (string, error) {
+	if a.aiClient == nil {
+		return a.noAIFallback(lang, text)
+	}
+
+	systemPrompt := a.buildSystemPrompt(lang)
+	enrichment := a.gatherContext(text)
+	userPrompt := text
+	if enrichment != "" {
+		userPrompt = text + "\n\n---\n[NOFXi System Context - real-time data for reference]\n" + enrichment
+	}
+
+	messages := []mcp.Message{mcp.NewSystemMessage(systemPrompt)}
+	for _, msg := range a.history.Get(userID) {
+		messages = append(messages, mcp.NewMessage(msg.Role, msg.Content))
+	}
+	messages = append(messages, mcp.NewUserMessage(userPrompt))
+	a.history.Add(userID, "user", text)
+
+	tools := agentTools()
+
+	// Tool-calling loop: use non-streaming to detect tool calls.
+	// Once no tool calls remain, stream the final response for real-time UX.
+	const maxToolRounds = 5
+	toolsUsed := false
+	for round := 0; round < maxToolRounds; round++ {
+		req := &mcp.Request{Messages: messages, Tools: tools, ToolChoice: "auto"}
+		resp, err := a.aiClient.CallWithRequestFull(req)
+		if err != nil {
+			a.logger.Error("LLM call failed (stream)", "error", err, "round", round)
+			return a.noAIFallback(lang, text)
+		}
+
+		// No tool calls → final text response
+		if len(resp.ToolCalls) == 0 {
+			if !toolsUsed {
+				// No tools at all — response was fast, just return it
+				a.history.Add(userID, "assistant", resp.Content)
+				return resp.Content, nil
+			}
+			// After tool rounds, we already have the response (non-streamed).
+			// Still return it — the SSE handler sends it as "done".
+			a.history.Add(userID, "assistant", resp.Content)
+			return resp.Content, nil
+		}
+
+		// Process tool calls
+		toolsUsed = true
+		a.logger.Info("LLM tool calls (stream)", "count", len(resp.ToolCalls), "round", round)
+		assistantMsg := mcp.Message{Role: "assistant", ToolCalls: resp.ToolCalls}
+		if resp.Content != "" {
+			assistantMsg.Content = resp.Content
+		}
+		messages = append(messages, assistantMsg)
+
+		for _, tc := range resp.ToolCalls {
+			onEvent(StreamEventTool, tc.Function.Name)
+			a.logger.Info("executing tool", "name", tc.Function.Name, "call_id", tc.ID)
+			result := a.handleToolCall(ctx, userID, lang, tc)
+			messages = append(messages, mcp.Message{Role: "tool", Content: result, ToolCallID: tc.ID})
+		}
+	}
+
+	// Exhausted tool rounds — stream the final synthesis response
+	finalReq := &mcp.Request{Messages: messages}
+	finalText, err := a.aiClient.CallWithRequestStream(finalReq, func(chunk string) {
+		onEvent(StreamEventDelta, chunk)
+	})
+	if err != nil {
+		a.logger.Error("stream final response failed", "error", err)
+		return a.noAIFallback(lang, text)
+	}
+	a.history.Add(userID, "assistant", finalText)
+	return finalText, nil
 }
 
 // buildSystemPrompt creates the system prompt that makes NOFXi behave like a real agent.

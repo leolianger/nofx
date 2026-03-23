@@ -77,6 +77,15 @@ func (t *BybitTrader) getTradesViaHTTP(startTime time.Time, limit int) ([]BybitT
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errBody, _ := safe.ReadAllLimited(resp.Body)
+		snippet := string(errBody)
+		if len(snippet) > 256 {
+			snippet = snippet[:256] + "..."
+		}
+		return nil, fmt.Errorf("Bybit API HTTP error (status %d): %s", resp.StatusCode, snippet)
+	}
+
 	body, err := safe.ReadAllLimited(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)

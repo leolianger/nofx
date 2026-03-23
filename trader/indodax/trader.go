@@ -176,6 +176,13 @@ func (t *IndodaxTrader) doPrivateRequest(params url.Values) ([]byte, error) {
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, fmt.Errorf("rate limit exceeded, please try again later")
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snippet := string(data)
+		if len(snippet) > 256 {
+			snippet = snippet[:256] + "..."
+		}
+		return nil, fmt.Errorf("Indodax API HTTP error (status %d): %s", resp.StatusCode, snippet)
+	}
 
 	// Parse response to check success
 	var apiResp IndodaxResponse

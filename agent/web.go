@@ -83,6 +83,78 @@ func (w *WebHandler) HandleChat(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, 200, map[string]string{"response": resp})
 }
 
+// HandleChatStream handles POST /api/agent/chat/stream — SSE streaming chat.
+// Sends server-sent events with types: tool, delta, done, error.
+func (w *WebHandler) HandleChatStream(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		Message string `json:"message"`
+		UserID  int64  `json:"user_id"`
+		Lang    string `json:"lang"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&req); err != nil {
+		writeJSON(rw, 400, map[string]string{"error": "invalid request"})
+		return
+	}
+	if req.Message == "" {
+		writeJSON(rw, 400, map[string]string{"error": "message required"})
+		return
+	}
+	if req.UserID == 0 {
+		req.UserID = 1
+	}
+	msg := req.Message
+	if req.Lang != "" {
+		msg = "[lang:" + req.Lang + "] " + msg
+	}
+
+	// Set SSE headers
+	rw.Header().Set("Content-Type", "text/event-stream")
+	rw.Header().Set("Cache-Control", "no-cache")
+	rw.Header().Set("Connection", "keep-alive")
+	rw.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
+	rw.WriteHeader(200)
+
+	flusher, ok := rw.(http.Flusher)
+	if !ok {
+		writeSSE(rw, nil, "error", "streaming not supported")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+
+	resp, err := w.agent.HandleMessageStream(ctx, req.UserID, msg, func(event, data string) {
+		writeSSE(rw, flusher, event, data)
+	})
+	if err != nil {
+		w.logger.Error("agent HandleMessageStream failed", "error", err, "user_id", req.UserID)
+		writeSSE(rw, flusher, "error", "Failed to process message. Please try again.")
+		return
+	}
+	// Send final done event with complete response
+	writeSSE(rw, flusher, "done", resp)
+}
+
+// writeSSE writes a single SSE event.
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, event, data string) {
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, sseEscape(data))
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+// sseEscape escapes newlines in SSE data (each line needs a "data: " prefix).
+func sseEscape(s string) string {
+	// SSE spec: multi-line data uses multiple "data:" lines
+	// But we use JSON encoding to avoid this complexity
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 // HandleKlines proxies kline data from Binance.
 func (w *WebHandler) HandleKlines(rw http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")

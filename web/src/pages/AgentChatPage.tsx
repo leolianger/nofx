@@ -104,7 +104,7 @@ export function AgentChatPage() {
       const controller = new AbortController()
       abortRef.current = controller
 
-      const res = await fetch('/api/agent/chat', {
+      const res = await fetch('/api/agent/chat/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -117,38 +117,91 @@ export function AgentChatPage() {
         const errData = await res.json().catch(() => ({}))
         throw new Error(errData.error || `Server error (${res.status})`)
       }
-      const data = await res.json()
-      const responseText = data.response || data.error || 'No response'
 
-      // Simulate streaming by revealing text in chunks (batched to reduce renders)
-      const words = responseText.split(/(\s+)/)
-      const chunkSize = Math.max(3, Math.ceil(words.length / 40)) // ~40 frames max
-      let displayed = ''
-      for (let i = 0; i < words.length; i += chunkSize) {
-        const chunk = words.slice(i, i + chunkSize).join('')
-        displayed += chunk
-        const current = displayed
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === botId
-              ? {
-                  ...m,
-                  text: current,
-                  time: new Date().toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  }),
-                }
-              : m
-          )
-        )
-        if (i + chunkSize < words.length) {
-          await new Promise((r) => setTimeout(r, 20))
+      // Real SSE streaming
+      const reader = res.body?.getReader()
+      const decoder = new TextDecoder()
+      if (!reader) throw new Error('No response body')
+
+      let buffer = ''
+      let finalText = ''
+      const now = () =>
+        new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || '' // Keep incomplete line in buffer
+
+        let eventType = ''
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim()
+          } else if (line.startsWith('data: ') && eventType) {
+            const rawData = line.slice(6)
+            try {
+              const data = JSON.parse(rawData)
+              if (eventType === 'delta') {
+                // data is the accumulated text so far
+                finalText = data
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === botId
+                      ? { ...m, text: data, time: now() }
+                      : m
+                  )
+                )
+              } else if (eventType === 'tool') {
+                // Show tool being called as a status indicator
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === botId
+                      ? {
+                          ...m,
+                          text: m.text || `🔧 _Calling ${data}..._`,
+                          time: now(),
+                        }
+                      : m
+                  )
+                )
+              } else if (eventType === 'done') {
+                finalText = data
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === botId
+                      ? { ...m, text: data, time: now(), streaming: false }
+                      : m
+                  )
+                )
+              } else if (eventType === 'error') {
+                throw new Error(data)
+              }
+            } catch (parseErr) {
+              // Ignore malformed SSE data lines
+            }
+            eventType = ''
+          }
         }
       }
-      // Mark streaming done
+
+      // If stream ended without a "done" event, mark as done
       setMessages((prev) =>
-        prev.map((m) => (m.id === botId ? { ...m, streaming: false } : m))
+        prev.map((m) =>
+          m.id === botId && m.streaming
+            ? {
+                ...m,
+                text: finalText || m.text || 'No response',
+                streaming: false,
+                time: now(),
+              }
+            : m
+        )
       )
     } catch (e: any) {
       if (e.name === 'AbortError') {

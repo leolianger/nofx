@@ -117,12 +117,16 @@ func (s *EquityStore) GetAllTradersLatest() (map[string]*EquitySnapshot, error) 
 	return result, nil
 }
 
-// CleanOldRecords cleans old records from N days ago
+// CleanOldRecords cleans old records from N days ago.
+// If traderID is empty, cleans records for ALL traders.
 func (s *EquityStore) CleanOldRecords(traderID string, days int) (int64, error) {
 	cutoffTime := time.Now().AddDate(0, 0, -days)
 
-	result := s.db.Where("trader_id = ? AND timestamp < ?", traderID, cutoffTime).
-		Delete(&EquitySnapshot{})
+	query := s.db.Where("timestamp < ?", cutoffTime)
+	if traderID != "" {
+		query = query.Where("trader_id = ?", traderID)
+	}
+	result := query.Delete(&EquitySnapshot{})
 	if result.Error != nil {
 		return 0, fmt.Errorf("failed to clean old records: %w", result.Error)
 	}
