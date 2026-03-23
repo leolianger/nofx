@@ -78,6 +78,18 @@
 ### Code Consistency
 - [DONE] Migrate remaining `io.ReadAll(io.LimitReader())` in agent/brain.go and agent/sentinel.go to `safe.ReadAllLimited` — consistent usage across codebase, removed unused `io` imports
 
+### 2026-03-23 11:52 — Panic Prevention in Trading Code + API Body Limits
+- [DONE] Add `requestBodyLimitMiddleware` (1MB) — all API endpoints now reject oversized payloads (prevents OOM)
+- [DONE] Fix `defer resp.Body.Close()` inside loop in `getPublicIPFromAPI` — was leaking connections
+- [DONE] Add `posFloat64`/`posString` safe helpers in `trader/helpers.go`
+- [DONE] Convert 30+ unsafe type assertions (`pos["key"].(type)`) to safe comma-ok pattern across ALL exchange traders:
+  — OKX, Hyperliquid, Aster, Bybit, KuCoin, Gate, Bitget, Binance
+  — auto_trader_risk.go (drawdown monitor could panic → silently stop protecting positions)
+  — auto_trader_decision.go (trading decisions)
+  — auto_trader_loop.go (core trading loop)
+- [DONE] Zero unsafe type assertions remaining in `trader/` package
+- [DONE] Fix frontend `config.ts`: rejected promise cached forever on network error (never retried)
+
 ### Features
 - [PENDING] Agent chat has fake streaming (word-by-word setTimeout) — implement real SSE streaming
 - [PENDING] Add WebSocket support for real-time position/balance updates instead of polling
