@@ -119,6 +119,25 @@
 - [DONE] Fix ChartTabs.tsx responsive height — was using non-reactive `window.innerWidth` at render time, replaced with Tailwind `h-[500px] md:h-[600px]`
 - [DONE] Restart backend with latest build — all fixes since 9:27AM now live (health endpoint, safe helpers, ticker leaks, etc.)
 
+### 2026-03-23 18:57 — Alpaca Integration Bug Fixes (Critical)
+- [DONE] Fix GetBalance field names: `total_equity`→`totalEquity`, `available_balance`→`availableBalance`
+  — Auto-trader was receiving 0 equity/balance, making ALL trading decisions broken for stock traders
+- [DONE] Fix GetPositions: add `positionAmt` and `unRealizedProfit` standard fields
+  — Positions were invisible to trading AI (quantity read as 0, PnL read as 0)
+- [DONE] Fix CancelAllOrders: was calling `DELETE /v2/orders` without symbol filter
+  — Would cancel ALL orders across ALL symbols when only one symbol's orders should be cancelled
+- [DONE] Implement GetClosedPnL: was returning nil, now reconstructs from filled sell orders
+  — Trade history (`get_trade_history` tool) now works for Alpaca traders
+- [DONE] Add IsMarketOpen method: checks Alpaca's `/v2/clock` endpoint
+- [DONE] Add market hours check in trading loop: skip cycles when US market is closed
+  — Saves LLM API calls and prevents failed order submissions outside market hours
+- [DONE] Fix parseTradeCommand: "BUY AAPL 10" no longer becomes "AAPLUSDT"
+  — Stock tickers now preserved as-is, only crypto symbols get USDT suffix
+- [DONE] Fix toolGetMarketPrice: route stock symbols to Alpaca trader, crypto to others
+  — Previously would try crypto exchanges for stock prices, always failing
+- [DONE] Add `exchange` field to toolGetPositions output
+  — Multi-exchange users can now distinguish stock vs crypto positions
+
 ### Features
-- [PENDING] Agent chat has fake streaming (word-by-word setTimeout) — implement real SSE streaming
+- [DONE] Agent chat real SSE streaming (implemented in earlier commit)
 - [PENDING] Add WebSocket support for real-time position/balance updates instead of polling
