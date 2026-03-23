@@ -53,6 +53,17 @@
 ### Code Quality
 - [DONE] Extract WelcomeScreen, ChatMessages, ChatInput from AgentChatPage (825→480 lines)
 - [DONE] Sanitize 3 more error message leaks in API responses (handler_trader.go ×2, handler_ai_cost.go ×1)
+- [DONE] Consistent safe type helpers in ALL auto_trader files — zero raw `pos["key"].(type)` remaining:
+  — auto_trader_decision.go: 2 leverage lookups → posFloat64
+  — auto_trader_grid.go: emergencyExit + getDecisionContext → posFloat64/posString
+  — auto_trader_grid_orders.go: position value calc + state sync + close → posFloat64/posString
+  — auto_trader_grid_regime.go: GetGridRiskInfo position lookup → posFloat64/posString
+  — auto_trader_loop.go: leverage + createdTime → posFloat64/posInt64
+  — auto_trader_orders.go: duplicate position check + close fallback → posString/posFloat64
+  — auto_trader_risk.go: drawdown monitor position data → posFloat64/posString
+  — Added `posInt64` helper for int64 extraction (createdTime, timestamps)
+- [DONE] Fix emergencyExit: log CloseLong/CloseShort errors + GetPositions failure (was silently dropping)
+- [DONE] Upgrade closeAllPositions log severity: Infof → Warnf for close failures
 - [PENDING] `context.Background()` used in ~69 exchange/trader calls — should propagate request context for proper cancellation (partially done: kline handlers fixed, trader/exchange calls remain)
 
 ### Security — Response Body Limits
