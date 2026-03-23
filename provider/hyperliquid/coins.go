@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"nofx/logger"
 	"sort"
@@ -82,8 +83,9 @@ func (p *CoinProvider) fetchCoins(ctx context.Context) error {
 	}
 
 	// Response is an array: [meta, [assetCtxs...]]
+	// Limit read to 4MB to prevent memory exhaustion from oversized responses
 	var rawResp []json.RawMessage
-	if err := json.NewDecoder(resp.Body).Decode(&rawResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4*1024*1024)).Decode(&rawResp); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}
 

@@ -145,45 +145,48 @@ export function AgentChatPage() {
             eventType = line.slice(7).trim()
           } else if (line.startsWith('data: ') && eventType) {
             const rawData = line.slice(6)
+            let data: string
             try {
-              const data = JSON.parse(rawData)
-              if (eventType === 'delta') {
-                // data is the accumulated text so far
-                finalText = data
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === botId
-                      ? { ...m, text: data, time: now() }
-                      : m
-                  )
-                )
-              } else if (eventType === 'tool') {
-                // Show tool being called as a status indicator
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === botId
-                      ? {
-                          ...m,
-                          text: m.text || `🔧 _Calling ${data}..._`,
-                          time: now(),
-                        }
-                      : m
-                  )
-                )
-              } else if (eventType === 'done') {
-                finalText = data
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === botId
-                      ? { ...m, text: data, time: now(), streaming: false }
-                      : m
-                  )
-                )
-              } else if (eventType === 'error') {
-                throw new Error(data)
-              }
-            } catch (parseErr) {
+              data = JSON.parse(rawData)
+            } catch {
               // Ignore malformed SSE data lines
+              eventType = ''
+              continue
+            }
+            if (eventType === 'delta') {
+              // data is the accumulated text so far
+              finalText = data
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === botId
+                    ? { ...m, text: data, time: now() }
+                    : m
+                )
+              )
+            } else if (eventType === 'tool') {
+              // Show tool being called as a status indicator
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === botId
+                    ? {
+                        ...m,
+                        text: m.text || `🔧 _Calling ${data}..._`,
+                        time: now(),
+                      }
+                    : m
+                )
+              )
+            } else if (eventType === 'done') {
+              finalText = data
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === botId
+                    ? { ...m, text: data, time: now(), streaming: false }
+                    : m
+                )
+              )
+            } else if (eventType === 'error') {
+              throw new Error(data)
             }
             eventType = ''
           }

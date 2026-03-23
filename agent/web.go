@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"nofx/safe"
 	"regexp"
 	"time"
 )
@@ -171,7 +172,7 @@ func (w *WebHandler) HandleKlines(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyBinance(rw, fmt.Sprintf("https://fapi.binance.com/fapi/v1/klines?symbol=%s&interval=%s&limit=300", symbol, interval))
+	proxyBinance(rw, r.Context(), fmt.Sprintf("https://fapi.binance.com/fapi/v1/klines?symbol=%s&interval=%s&limit=300", symbol, interval))
 }
 
 // HandleTicker proxies ticker data from Binance.
@@ -184,22 +185,22 @@ func (w *WebHandler) HandleTicker(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyBinance(rw, fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s", symbol))
+	proxyBinance(rw, r.Context(), fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s", symbol))
 }
 
 // HandleTickers handles GET /api/agent/tickers?symbols=BTCUSDT,ETHUSDT,SOLUSDT
-// Batch endpoint: fetches multiple tickers in one API call to Binance.
+// Batch endpoint: fetches multiple tickers concurrently, returns array.
 func (w *WebHandler) HandleTickers(rw http.ResponseWriter, r *http.Request) {
 	symbolsParam := r.URL.Query().Get("symbols")
 	if symbolsParam == "" {
 		symbolsParam = "BTCUSDT,ETHUSDT,SOLUSDT"
 	}
 
-	// Validate and build JSON array of symbols
-	symbols := []string{}
-	for _, s := range splitAndTrim(symbolsParam) {
+	// Validate symbols
+	var symbols []string
+	for _, s := range splitComma(symbolsParam) {
 		if validSymbolRe.MatchString(s) {
-			symbols = append(symbols, `"`+s+`"`)
+			symbols = append(symbols, s)
 		}
 	}
 	if len(symbols) == 0 {
@@ -211,15 +212,70 @@ func (w *WebHandler) HandleTickers(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Binance supports batch ticker: /fapi/v1/ticker/24hr with multiple symbols
-	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[%s]", joinStrings(symbols, ","))
-	proxyBinance(rw, url)
+	// Fetch all tickers concurrently with context propagation
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	type result struct {
+		idx  int
+		data json.RawMessage
+	}
+	results := make(chan result, len(symbols))
+	for i, sym := range symbols {
+		idx, s := i, sym
+		safe.GoNamed("ticker-fetch-"+s, func() {
+			req, err := http.NewRequestWithContext(ctx, "GET",
+				fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s", s), nil)
+			if err != nil {
+				results <- result{idx: idx}
+				return
+			}
+			resp, err := binanceClient.Do(req)
+			if err != nil {
+				results <- result{idx: idx}
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				results <- result{idx: idx}
+				return
+			}
+			body, err := safe.ReadAllLimited(resp.Body, 16*1024)
+			if err != nil {
+				results <- result{idx: idx}
+				return
+			}
+			results <- result{idx: idx, data: body}
+		})
+	}
+
+	// Collect results in order
+	ordered := make([]json.RawMessage, len(symbols))
+	for range symbols {
+		r := <-results
+		if r.data != nil {
+			ordered[r.idx] = r.data
+		}
+	}
+
+	// Filter out nil entries and write response
+	out := make([]json.RawMessage, 0, len(ordered))
+	for _, d := range ordered {
+		if d != nil {
+			out = append(out, d)
+		}
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(out)
 }
 
-// splitAndTrim splits a comma-separated string and trims whitespace.
-func splitAndTrim(s string) []string {
-	parts := []string{}
-	for _, p := range regexp.MustCompile(`\s*,\s*`).Split(s, -1) {
+// commaRe is pre-compiled for splitComma — avoids recompiling on every call.
+var commaRe = regexp.MustCompile(`\s*,\s*`)
+
+// splitComma splits a comma-separated string, trims whitespace, skips empty.
+func splitComma(s string) []string {
+	var parts []string
+	for _, p := range commaRe.Split(s, -1) {
 		if p != "" {
 			parts = append(parts, p)
 		}
@@ -227,21 +283,18 @@ func splitAndTrim(s string) []string {
 	return parts
 }
 
-// joinStrings joins strings with a separator.
-func joinStrings(ss []string, sep string) string {
-	result := ""
-	for i, s := range ss {
-		if i > 0 {
-			result += sep
-		}
-		result += s
-	}
-	return result
-}
-
-func proxyBinance(rw http.ResponseWriter, url string) {
-	resp, err := binanceClient.Get(url)
+func proxyBinance(rw http.ResponseWriter, ctx context.Context, url string) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		writeJSON(rw, 500, map[string]string{"error": "failed to create request"})
+		return
+	}
+	resp, err := binanceClient.Do(req)
+	if err != nil {
+		// Distinguish client cancellation from upstream failures
+		if ctx.Err() != nil {
+			return // Client disconnected, no point writing response
+		}
 		writeJSON(rw, 502, map[string]string{"error": "upstream request failed"})
 		return
 	}

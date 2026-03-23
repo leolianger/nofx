@@ -4,14 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"nofx/mcp"
 )
 
-// agentTools defines the tools available to the LLM for autonomous action.
-func agentTools() []mcp.Tool {
+// cachedTools holds the static tool definitions (built once, reused per message).
+var cachedTools = buildAgentTools()
+
+// agentTools returns the tools available to the LLM for autonomous action.
+func agentTools() []mcp.Tool { return cachedTools }
+
+func buildAgentTools() []mcp.Tool {
 	return []mcp.Tool{
 		{
 			Type: "function",
@@ -422,6 +428,13 @@ func (a *Agent) toolGetTradeHistory(argsJSON string) string {
 	if len(trades) == 0 {
 		return `{"trades": [], "message": "no closed trades found"}`
 	}
+
+	// Sort trades by exit time (most recent first) for consistent ordering across traders
+	sort.Slice(trades, func(i, j int) bool {
+		ti, _ := trades[i]["exit_time"].(string)
+		tj, _ := trades[j]["exit_time"].(string)
+		return ti > tj // reverse chronological
+	})
 
 	// Only return up to the limit
 	if len(trades) > args.Limit {

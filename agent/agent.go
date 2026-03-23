@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"nofx/manager"
 	"nofx/market"
 	"nofx/mcp"
+	"nofx/safe"
 	"nofx/store"
 )
 
@@ -95,6 +97,16 @@ func (a *Agent) Start() {
 	if a.config.EnableBriefs { a.brain.StartMarketBriefs(a.config.BriefTimes) }
 	a.scheduler = NewScheduler(a, a.logger)
 	a.scheduler.Start(context.Background())
+
+	// Periodic cleanup of stale chat sessions (older than 4 hours)
+	safe.GoNamed("chat-history-cleanup", func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			a.history.CleanOld(4 * time.Hour)
+		}
+	})
+
 	a.logger.Info("NOFXi agent is online 🚀")
 }
 
@@ -234,6 +246,7 @@ func (a *Agent) thinkAndAct(ctx context.Context, userID int64, lang, text string
 			Messages:   messages,
 			Tools:      tools,
 			ToolChoice: "auto",
+			Ctx:        ctx,
 		}
 
 		resp, err := a.aiClient.CallWithRequestFull(req)
@@ -241,7 +254,7 @@ func (a *Agent) thinkAndAct(ctx context.Context, userID int64, lang, text string
 			a.logger.Error("LLM call failed", "error", err, "round", round)
 			if round == 0 {
 				// First round failed — try without tools as fallback
-				plainReq := &mcp.Request{Messages: messages}
+				plainReq := &mcp.Request{Messages: messages, Ctx: ctx}
 				plainResp, plainErr := a.aiClient.CallWithRequest(plainReq)
 				if plainErr != nil {
 					return a.noAIFallback(lang, text)
@@ -293,7 +306,7 @@ func (a *Agent) thinkAndAct(ctx context.Context, userID int64, lang, text string
 	}
 
 	// If we exhausted all rounds, ask LLM for a final text response without tools
-	finalReq := &mcp.Request{Messages: messages}
+	finalReq := &mcp.Request{Messages: messages, Ctx: ctx}
 	finalResp, err := a.aiClient.CallWithRequest(finalReq)
 	if err != nil {
 		return a.noAIFallback(lang, text)
@@ -343,13 +356,13 @@ func (a *Agent) thinkAndActStream(ctx context.Context, userID int64, lang, text 
 	toolsUsed := false
 
 	for round := 0; round < maxToolRounds; round++ {
-		req := &mcp.Request{Messages: messages, Tools: tools, ToolChoice: "auto"}
+		req := &mcp.Request{Messages: messages, Tools: tools, ToolChoice: "auto", Ctx: ctx}
 		resp, err := a.aiClient.CallWithRequestFull(req)
 		if err != nil {
 			a.logger.Error("LLM call failed (stream)", "error", err, "round", round)
 			if round == 0 {
 				// First round failed — try streaming without tools as fallback
-				streamReq := &mcp.Request{Messages: messages}
+				streamReq := &mcp.Request{Messages: messages, Ctx: ctx}
 				streamText, streamErr := a.aiClient.CallWithRequestStream(streamReq, func(chunk string) {
 					onEvent(StreamEventDelta, chunk)
 				})
@@ -396,7 +409,7 @@ func (a *Agent) thinkAndActStream(ctx context.Context, userID int64, lang, text 
 
 		// After tool execution, stream the next LLM response for real-time UX.
 		// Omit tools so LLM can't start another tool round — it must produce text.
-		streamReq := &mcp.Request{Messages: messages}
+		streamReq := &mcp.Request{Messages: messages, Ctx: ctx}
 		streamText, streamErr := a.aiClient.CallWithRequestStream(streamReq, func(chunk string) {
 			onEvent(StreamEventDelta, chunk)
 		})
@@ -409,7 +422,7 @@ func (a *Agent) thinkAndActStream(ctx context.Context, userID int64, lang, text 
 	}
 
 	// Exhausted all tool rounds — stream the final synthesis response
-	finalReq := &mcp.Request{Messages: messages}
+	finalReq := &mcp.Request{Messages: messages, Ctx: ctx}
 	finalText, err := a.aiClient.CallWithRequestStream(finalReq, func(chunk string) {
 		onEvent(StreamEventDelta, chunk)
 	})
@@ -582,9 +595,16 @@ func (a *Agent) gatherContext(text string) string {
 			}
 		}
 	}
+	// Collect and sort matched symbols for deterministic selection
+	sortedSymbols := make([]string, 0, len(matched))
+	for sym := range matched {
+		sortedSymbols = append(sortedSymbols, sym)
+	}
+	sort.Strings(sortedSymbols)
+
 	// Cap at 5 symbols to avoid slow context gathering
 	count := 0
-	for sym := range matched {
+	for _, sym := range sortedSymbols {
 		if count >= 5 { break }
 		md, err := market.Get(sym + "USDT")
 		if err == nil && md.CurrentPrice > 0 {

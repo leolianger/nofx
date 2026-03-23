@@ -501,6 +501,10 @@ func (client *Client) callWithRequestFull(req *Request) (*LLMResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+	// Propagate request context so client disconnects cancel in-flight LLM calls
+	if req.Ctx != nil {
+		httpReq = httpReq.WithContext(req.Ctx)
+	}
 
 	resp, err := client.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -538,6 +542,10 @@ func (client *Client) callWithRequest(req *Request) (string, error) {
 	httpReq, err := client.Hooks.BuildRequest(url, jsonData)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	// Propagate request context so client disconnects cancel in-flight LLM calls
+	if req.Ctx != nil {
+		httpReq = httpReq.WithContext(req.Ctx)
 	}
 
 	resp, err := client.HTTPClient.Do(httpReq)
@@ -684,8 +692,13 @@ func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) 
 
 	// Idle-timeout watchdog: cancel the request if no SSE line arrives for 60 seconds.
 	// This breaks the scanner out of an indefinitely blocking Read on a hung connection.
+	// Use request's Ctx as parent so client disconnects propagate cancellation.
 	const idleTimeout = 60 * time.Second
-	ctx, cancel := context.WithCancel(context.Background())
+	parentCtx := req.Ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 	resetCh := make(chan struct{}, 1)
 	safe.GoNamed("mcp-stream-idle-watchdog", func() {

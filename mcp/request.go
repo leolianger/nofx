@@ -1,5 +1,7 @@
 package mcp
 
+import "context"
+
 // Message represents a conversation message.
 // Supports plain messages (Role+Content), assistant tool-call messages (ToolCalls),
 // and tool result messages (Role="tool", ToolCallID, Content).
@@ -62,6 +64,11 @@ type Request struct {
 	// Advanced features
 	Tools      []Tool `json:"tools,omitempty"`       // Available tools list
 	ToolChoice string `json:"tool_choice,omitempty"` // Tool choice strategy ("auto", "none", {"type": "function", "function": {"name": "xxx"}})
+
+	// Context for cancellation — not serialized to JSON.
+	// If set, HTTP requests use this as the parent context so client disconnects
+	// propagate and cancel in-flight LLM calls.
+	Ctx context.Context `json:"-"`
 }
 
 // NewMessage creates a message
