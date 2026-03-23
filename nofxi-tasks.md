@@ -138,6 +138,19 @@
 - [DONE] Add `exchange` field to toolGetPositions output
   — Multi-exchange users can now distinguish stock vs crypto positions
 
+### 2026-03-23 19:12 — Goroutine Leak, Unsafe Assertions, Redundant API Calls
+- [DONE] Fix goroutine leak: `chat-history-cleanup` goroutine in `Agent.Start()` had no stop mechanism
+  — Now uses `stopCh` channel, cleanly exits on `Agent.Stop()` (was leaking goroutine+ticker on every restart)
+- [DONE] Eliminate redundant Sina API calls: `gatherContext` was hitting external Sina search API on EVERY message
+  — Added `looksLikeStockQuery()` guard: only calls API when text has stock-related keywords/tickers
+  — Saves ~200ms latency + API call on crypto-only queries (majority of traffic)
+- [DONE] Fix unsafe type assertion in Bybit `CloseShort`: `pos["positionAmt"].(float64)` → comma-ok pattern
+  — Critical: this is a real-money trading path, panic would leave short position unmanageable
+- [DONE] Safe type assertions in `market/api_client.go` `parseKline`: 11 bare `.(float64)`/`.(string)` → all guarded
+  — Prevents panic on unexpected Binance API response formats
+- [DONE] Safe type assertions in `market/historical.go` `GetKlinesRange`: bare `.(float64)` → comma-ok + length check
+- [DONE] HTTP client connection pooling in `market/historical.go` (was `&http.Client{Timeout: 15s}` with no transport)
+
 ### Features
 - [DONE] Agent chat real SSE streaming (implemented in earlier commit)
 - [PENDING] Add WebSocket support for real-time position/balance updates instead of polling
