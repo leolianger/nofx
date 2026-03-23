@@ -16,6 +16,7 @@ import (
 	"nofx/trader/bybit"
 	"nofx/trader/gate"
 	"nofx/trader/hyperliquid"
+	"nofx/trader/alpaca"
 	"nofx/trader/indodax"
 	"nofx/trader/kucoin"
 	"nofx/trader/lighter"
@@ -65,6 +66,11 @@ type AutoTraderConfig struct {
 	// Indodax API configuration
 	IndodaxAPIKey    string
 	IndodaxSecretKey string
+
+	// Alpaca API configuration (US stock trading)
+	AlpacaAPIKey    string
+	AlpacaAPISecret string
+	AlpacaPaper     bool // true = paper trading, false = live
 
 	// Hyperliquid configuration
 	HyperliquidPrivateKey  string
@@ -286,6 +292,9 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 	case "indodax":
 		logger.Infof("🏦 [%s] Using Indodax Spot trading", config.Name)
 		trader = indodax.NewIndodaxTrader(config.IndodaxAPIKey, config.IndodaxSecretKey)
+	case "alpaca":
+		logger.Infof("🏦 [%s] Using Alpaca US Stock trading (paper=%v)", config.Name, config.AlpacaPaper)
+		trader = alpaca.NewAlpacaTrader(config.AlpacaAPIKey, config.AlpacaAPISecret, config.AlpacaPaper)
 	default:
 		return nil, fmt.Errorf("unsupported trading platform: %s", config.Exchange)
 	}

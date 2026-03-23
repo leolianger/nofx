@@ -475,10 +475,10 @@ func (a *Agent) buildSystemPrompt(lang string) string {
 ## 工具使用
 你可以调用以下工具来执行操作：
 - **search_stock** — 搜索股票（支持中文名、英文名、代码）。当用户提到你不认识的股票时，先用这个工具搜索。
-- **execute_trade** — 下单交易（做多/做空/平多/平空）。调用后会创建待确认订单，用户需回复"确认 trade_xxx"才会真正执行。
-- **get_positions** — 查看当前所有持仓
+- **execute_trade** — 下单交易（加密货币或美股）。美股：open_long=买入，close_long=卖出。调用后创建待确认订单，用户需回复"确认 trade_xxx"。
+- **get_positions** — 查看当前所有持仓（加密货币 + 股票）
 - **get_balance** — 查看账户余额
-- **get_market_price** — 获取交易所实时价格
+- **get_market_price** — 获取实时价格（加密货币或股票代码）
 
 ### 交易安全规则
 - 用户明确要求交易时才调用 execute_trade
@@ -536,10 +536,10 @@ func (a *Agent) buildSystemPrompt(lang string) string {
 ## Tools
 You can call these tools to take action:
 - **search_stock** — Search for stocks by name, ticker, or code. Covers A-share, HK, and US markets. Use when the user mentions an unknown stock.
-- **execute_trade** — Place a trade order (open_long/open_short/close_long/close_short). Creates a pending order that requires user confirmation.
-- **get_positions** — View all current open positions
+- **execute_trade** — Place a trade order (crypto or US stocks). For stocks: open_long=buy, close_long=sell. Creates a pending order that requires user confirmation.
+- **get_positions** — View all current open positions (crypto + stocks)
 - **get_balance** — View account balance and equity
-- **get_market_price** — Get real-time price from the exchange
+- **get_market_price** — Get real-time price from the exchange (crypto or stock symbol)
 
 ### Trade Safety Rules
 - Only call execute_trade when user explicitly requests a trade

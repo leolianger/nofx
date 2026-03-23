@@ -153,6 +153,9 @@ func (a *Agent) executeTrade(ctx context.Context, trade *TradeAction) error {
 		return fmt.Errorf("no traders configured")
 	}
 
+	// Determine if this is a stock trade to route to the right exchange
+	wantStock := isStockSymbol(trade.Symbol)
+
 	// Find a running trader's underlying exchange interface
 	var underlyingTrader interface {
 		OpenLong(symbol string, quantity float64, leverage int) (map[string]interface{}, error)
@@ -169,12 +172,24 @@ func (a *Agent) executeTrade(ctx context.Context, trade *TradeAction) error {
 			if ut == nil {
 				continue
 			}
+			// Route stock symbols to alpaca traders, crypto to others
+			exchange := t.GetExchange()
+			isAlpaca := exchange == "alpaca"
+			if wantStock && !isAlpaca {
+				continue // Skip non-stock traders for stock symbols
+			}
+			if !wantStock && isAlpaca {
+				continue // Skip stock traders for crypto symbols
+			}
 			underlyingTrader = ut
 			break
 		}
 	}
 
 	if underlyingTrader == nil {
+		if wantStock {
+			return fmt.Errorf("no running stock trader (Alpaca) found — configure one to trade stocks")
+		}
 		return fmt.Errorf("no running trader supports trade execution")
 	}
 

@@ -704,6 +704,10 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	case "indodax":
 		traderConfig.IndodaxAPIKey = string(exchangeCfg.APIKey)
 		traderConfig.IndodaxSecretKey = string(exchangeCfg.SecretKey)
+	case "alpaca":
+		traderConfig.AlpacaAPIKey = string(exchangeCfg.APIKey)
+		traderConfig.AlpacaAPISecret = string(exchangeCfg.SecretKey)
+		traderConfig.AlpacaPaper = exchangeCfg.Testnet // Reuse Testnet field for paper/live toggle
 	}
 
 	// Set API keys based on AI model (convert EncryptedString to string)

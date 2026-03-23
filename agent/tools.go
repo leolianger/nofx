@@ -40,7 +40,7 @@ func buildAgentTools() []mcp.Tool {
 			Type: "function",
 			Function: mcp.FunctionDef{
 				Name:        "execute_trade",
-				Description: "Execute a trade order. Use this when the user explicitly asks to open/close a position. This will create a pending trade that requires user confirmation before execution.",
+				Description: "Execute a trade order (crypto or US stocks). Use this when the user explicitly asks to open/close a position. For stocks (e.g. AAPL, TSLA), use open_long to buy and close_long to sell. This creates a pending trade that requires user confirmation.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -51,7 +51,7 @@ func buildAgentTools() []mcp.Tool {
 						},
 						"symbol": map[string]any{
 							"type":        "string",
-							"description": "Trading symbol, e.g. BTCUSDT, ETHUSDT. Always append USDT if not present.",
+							"description": "Trading symbol. For crypto: BTCUSDT, ETHUSDT. For US stocks: AAPL, TSLA, NVDA (no suffix needed).",
 						},
 						"quantity": map[string]any{
 							"type":        "number",
@@ -86,13 +86,13 @@ func buildAgentTools() []mcp.Tool {
 			Type: "function",
 			Function: mcp.FunctionDef{
 				Name:        "get_market_price",
-				Description: "Get the current market price for a symbol from the trader's exchange.",
+				Description: "Get the current market price for a crypto or stock symbol.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"symbol": map[string]any{
 							"type":        "string",
-							"description": "Trading symbol, e.g. BTCUSDT",
+							"description": "Trading symbol, e.g. BTCUSDT for crypto, AAPL for stocks",
 						},
 					},
 					"required": []string{"symbol"},
@@ -205,7 +205,8 @@ func (a *Agent) toolExecuteTrade(_ context.Context, userID int64, lang, argsJSON
 
 	// Normalize symbol
 	sym := strings.ToUpper(args.Symbol)
-	if !strings.HasSuffix(sym, "USDT") {
+	// Only append USDT for crypto symbols; stock tickers (e.g. AAPL, TSLA) stay as-is
+	if !isStockSymbol(sym) && !strings.HasSuffix(sym, "USDT") {
 		sym += "USDT"
 	}
 
@@ -330,7 +331,7 @@ func (a *Agent) toolGetMarketPrice(argsJSON string) string {
 	}
 
 	sym := strings.ToUpper(args.Symbol)
-	if !strings.HasSuffix(sym, "USDT") {
+	if !isStockSymbol(sym) && !strings.HasSuffix(sym, "USDT") {
 		sym += "USDT"
 	}
 
@@ -458,4 +459,32 @@ func (a *Agent) toolGetTradeHistory(argsJSON string) string {
 		},
 	})
 	return string(result)
+}
+
+// isStockSymbol heuristically determines if a symbol is a stock ticker (not crypto).
+// Stock tickers are 1-5 uppercase letters without numeric suffixes like "USDT".
+// Known crypto suffixes: USDT, BTC, ETH, BNB, USDC, BUSD.
+func isStockSymbol(sym string) bool {
+	sym = strings.ToUpper(sym)
+	// If it already has a crypto quote suffix, it's crypto
+	cryptoSuffixes := []string{"USDT", "BUSD", "USDC", "BTC", "ETH", "BNB"}
+	for _, suffix := range cryptoSuffixes {
+		if strings.HasSuffix(sym, suffix) && len(sym) > len(suffix) {
+			return false
+		}
+	}
+	// Pure uppercase letters, 1-5 chars = likely a stock ticker
+	if len(sym) >= 1 && len(sym) <= 5 {
+		allLetters := true
+		for _, c := range sym {
+			if c < 'A' || c > 'Z' {
+				allLetters = false
+				break
+			}
+		}
+		if allLetters {
+			return true
+		}
+	}
+	return false
 }

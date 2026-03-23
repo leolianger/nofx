@@ -63,7 +63,11 @@ export function PositionsPanel() {
         const isProfit = pnl >= 0
         const color = isProfit ? '#00e5a0' : '#F6465D'
         const side = pos.side?.toUpperCase() || (pos.quantity > 0 ? 'LONG' : 'SHORT')
-        const symbol = (pos.symbol || '').replace('USDT', '')
+        const rawSymbol = pos.symbol || ''
+        // Stock symbols are pure letters (1-5 chars), crypto has USDT suffix
+        const isStock = /^[A-Z]{1,5}$/.test(rawSymbol) && !rawSymbol.endsWith('USDT')
+        const symbol = isStock ? rawSymbol : rawSymbol.replace('USDT', '')
+        const currencyPrefix = isStock ? '$' : ''
 
         return (
           <div
@@ -93,6 +97,9 @@ export function PositionsPanel() {
                 >
                   {symbol}
                 </span>
+                {isStock && (
+                  <span style={{ fontSize: 10, color: '#8b8ba0' }}>🇺🇸</span>
+                )}
                 <span
                   style={{
                     fontSize: 10,
@@ -106,7 +113,7 @@ export function PositionsPanel() {
                     color: side === 'LONG' ? '#00e5a0' : '#F6465D',
                   }}
                 >
-                  {side}
+                  {isStock ? (side === 'LONG' ? 'HOLD' : 'SHORT') : side}
                 </span>
               </div>
               <div
@@ -125,7 +132,7 @@ export function PositionsPanel() {
                   <ArrowDownRight size={12} />
                 )}
                 {isProfit ? '+' : ''}
-                {pnl.toFixed(2)}
+                {currencyPrefix}{pnl.toFixed(2)}
               </div>
             </div>
             <div
@@ -136,8 +143,8 @@ export function PositionsPanel() {
                 color: '#5c5c72',
               }}
             >
-              <span>Qty: {pos.quantity}</span>
-              <span>Entry: {pos.entry_price.toFixed(2)}</span>
+              <span>{isStock ? 'Shares' : 'Qty'}: {pos.quantity}</span>
+              <span>Entry: {currencyPrefix}{pos.entry_price.toFixed(2)}</span>
             </div>
           </div>
         )

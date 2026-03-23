@@ -10,6 +10,7 @@ import (
 	"nofx/safe"
 	"nofx/store"
 	"nofx/trader"
+	alpacatrader "nofx/trader/alpaca"
 	"nofx/trader/aster"
 	"nofx/trader/binance"
 	"nofx/trader/bitget"
@@ -217,6 +218,12 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 			} else {
 				createErr = fmt.Errorf("Lighter requires wallet address and API Key private key")
 			}
+		case "alpaca":
+			tempTrader = alpacatrader.NewAlpacaTrader(
+				string(exchangeCfg.APIKey),
+				string(exchangeCfg.SecretKey),
+				exchangeCfg.Testnet,
+			)
 		default:
 			logger.Infof("⚠️ Unsupported exchange type: %s, using user input for initial balance", exchangeCfg.ExchangeType)
 		}
