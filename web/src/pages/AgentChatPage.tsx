@@ -189,10 +189,13 @@ function renderInline(text: string): (string | JSX.Element)[] {
     } else if (part.match(/^\[([^\]]+)\]\(([^)]+)\)$/)) {
       const match = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
       if (match) {
+        const href = match[2]
+        // Only allow http/https links to prevent javascript: XSS
+        const safeHref = /^https?:\/\//i.test(href) ? href : '#'
         result.push(
           <a
             key={i}
-            href={match[2]}
+            href={safeHref}
             target="_blank"
             rel="noopener noreferrer"
             style={{ color: '#F0B90B', textDecoration: 'underline', textUnderlineOffset: 2 }}
