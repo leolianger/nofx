@@ -15,6 +15,17 @@ import (
 	bybit "github.com/bybit-exchange/bybit.go.api"
 )
 
+// bybitHTTPClient is a shared HTTP client for direct Bybit API calls (public + signed).
+// Reused across requests to benefit from connection pooling; 30s timeout prevents hangs.
+var bybitHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        20,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 // BybitTrader Bybit USDT Perpetual Futures Trader
 type BybitTrader struct {
 	client    *bybit.Client
@@ -94,7 +105,7 @@ func (t *BybitTrader) getQtyStep(symbol string) float64 {
 
 	// Call public API directly to get contract information
 	url := fmt.Sprintf("https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=%s", symbol)
-	resp, err := http.Get(url)
+	resp, err := bybitHTTPClient.Get(url)
 	if err != nil {
 		logger.Infof("⚠️ [Bybit] Failed to get precision info for %s: %v", symbol, err)
 		return 1 // Default to integer

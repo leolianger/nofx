@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"nofx/safe"
@@ -87,7 +86,7 @@ func (b *Brain) scanNews(seen map[string]bool) {
 		b.logger.Debug("news API non-200", "status", resp.StatusCode)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024)) // 1MB limit
+	body, err := safe.ReadAllLimited(resp.Body, 1024*1024) // 1MB limit
 	if err != nil { return }
 
 	var result struct {
@@ -167,7 +166,7 @@ func (b *Brain) sendBrief(hour int) {
 	for _, sym := range []string{"BTCUSDT", "ETHUSDT"} {
 		resp, err := b.http.Get(fmt.Sprintf("https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=%s", sym))
 		if err != nil { continue }
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024)) // 64KB limit
+		body, readErr := safe.ReadAllLimited(resp.Body, 64*1024) // 64KB limit
 		statusOK := resp.StatusCode == http.StatusOK
 		resp.Body.Close()
 		if readErr != nil || !statusOK { continue }

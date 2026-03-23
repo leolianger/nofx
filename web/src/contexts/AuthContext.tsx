@@ -250,10 +250,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const resetPassword = async (email: string, newPassword: string) => {
     try {
+      const savedToken = token || localStorage.getItem('auth_token')
       const response = await fetch('/api/reset-password', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(savedToken ? { Authorization: `Bearer ${savedToken}` } : {}),
         },
         body: JSON.stringify({
           email,

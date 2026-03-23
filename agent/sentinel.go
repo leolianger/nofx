@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -120,7 +119,7 @@ func (s *Sentinel) check(symbol string) {
 		s.logger.Debug("sentinel ticker non-200", "symbol", symbol, "status", resp.StatusCode)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024)) // 256KB limit
+	body, err := safe.ReadAllLimited(resp.Body, 256*1024) // 256KB limit
 	if err != nil { return }
 	var t map[string]interface{}
 	if err := json.Unmarshal(body, &t); err != nil { return }
