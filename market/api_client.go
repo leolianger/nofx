@@ -15,6 +15,14 @@ const (
 	baseURL = "https://fapi.binance.com"
 )
 
+// truncateBody returns the first 512 bytes of body for error messages.
+func truncateBody(body []byte) string {
+	if len(body) > 512 {
+		return string(body[:512]) + "..."
+	}
+	return string(body)
+}
+
 type APIClient struct {
 	client *http.Client
 }
@@ -47,6 +55,9 @@ func (c *APIClient) GetExchangeInfo() (*ExchangeInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Binance API error (status %d): %s", resp.StatusCode, truncateBody(body))
+	}
 	var exchangeInfo ExchangeInfo
 	err = json.Unmarshal(body, &exchangeInfo)
 	if err != nil {
@@ -78,6 +89,9 @@ func (c *APIClient) GetKlines(symbol, interval string, limit int) ([]Kline, erro
 	body, err := safe.ReadAllLimited(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Binance klines API error (status %d): %s", resp.StatusCode, truncateBody(body))
 	}
 
 	var klineResponses []KlineResponse
@@ -143,6 +157,9 @@ func (c *APIClient) GetCurrentPrice(symbol string) (float64, error) {
 	body, err := safe.ReadAllLimited(resp.Body)
 	if err != nil {
 		return 0, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("Binance price API error (status %d): %s", resp.StatusCode, truncateBody(body))
 	}
 
 	var ticker PriceTicker

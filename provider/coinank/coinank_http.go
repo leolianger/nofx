@@ -63,6 +63,9 @@ func (c *CoinankClient) Get(ctx context.Context, path string, paramsMap map[stri
 	if err != nil {
 		return "", err
 	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("CoinAnk GET error (status %d): %.512s", resp.StatusCode, string(body))
+	}
 	return string(body), nil
 }
 
@@ -87,6 +90,9 @@ func (c *CoinankClient) Post(ctx context.Context, path string, data any) (string
 	body, err := safe.ReadAllLimited(resp.Body)
 	if err != nil {
 		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("CoinAnk POST error (status %d): %.512s", resp.StatusCode, string(body))
 	}
 	return string(body), nil
 }

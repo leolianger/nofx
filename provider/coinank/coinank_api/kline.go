@@ -71,6 +71,9 @@ func get(ctx context.Context, path string, paramsMap map[string]string) (string,
 	if err != nil {
 		return "", err
 	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("CoinAnk API error (status %d): %.512s", resp.StatusCode, string(body))
+	}
 	return string(body), nil
 }
 

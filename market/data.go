@@ -1,11 +1,12 @@
 package market
 
 import (
-	"nofx/safe"
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"nofx/logger"
+	"nofx/safe"
 	"strconv"
 	"strings"
 	"sync"
@@ -270,6 +271,9 @@ func getOpenInterestData(symbol string) (*OIData, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Binance openInterest API error (status %d): %s", resp.StatusCode, truncateBody(body))
+	}
 
 	var result struct {
 		OpenInterest string `json:"openInterest"`
@@ -314,6 +318,9 @@ func getFundingRate(symbol string) (float64, error) {
 	body, err := safe.ReadAllLimited(resp.Body)
 	if err != nil {
 		return 0, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("Binance premiumIndex API error (status %d): %s", resp.StatusCode, truncateBody(body))
 	}
 
 	var result struct {

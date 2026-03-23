@@ -129,6 +129,9 @@ func (c *Client) GetTimeSeries(ctx context.Context, symbol string, interval stri
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("TwelveData API error (status %d): %.512s", resp.StatusCode, string(body))
+	}
 
 	// Parse response
 	var result TimeSeriesResponse
@@ -175,6 +178,9 @@ func (c *Client) GetQuote(ctx context.Context, symbol string) (*QuoteResponse, e
 	body, err := safe.ReadAllLimited(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("TwelveData API error (status %d): %.512s", resp.StatusCode, string(body))
 	}
 
 	// Parse response
