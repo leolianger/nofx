@@ -445,13 +445,15 @@ function App() {
       </div>
     )
   }
-  // Show landing page for root route
-  if (route === '/' || route === '') {
+  // Root route → go to Agent (NOFXi 的主界面就是 Agent)
+  // Landing page only for explicit /landing
+  if (route === '/landing') {
     return <LandingPage />
   }
 
-  // Redirect unauthenticated users to landing page
-  if (!user || !token) {
+  // Agent page is accessible without login
+  // Other pages redirect to landing if not authenticated
+  if ((!user || !token) && currentPage !== 'agent') {
     return <LandingPage />
   }
 
