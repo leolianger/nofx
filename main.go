@@ -192,6 +192,10 @@ func main() {
 	}
 	logger.Info("✅ HTTP server stopped")
 
+	// Stop NOFXi agent (sentinel, brain, scheduler, cleanup goroutines)
+	nofxiAgent.Stop()
+	logger.Info("✅ NOFXi agent stopped")
+
 	// Stop all traders
 	traderManager.StopAll()
 	logger.Info("✅ System shut down safely")

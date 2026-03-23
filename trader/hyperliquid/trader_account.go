@@ -132,9 +132,6 @@ func (t *HyperliquidTrader) GetBalance() (map[string]interface{}, error) {
 			spotUSDCBalance, availableBalance)
 	}
 
-	// Suppress unused variable warning
-	_ = totalUnrealizedPnlAll
-
 	result["totalWalletBalance"] = totalWalletBalance       // Total assets (Perp + Spot + xyz) - unrealized
 	result["totalEquity"] = totalEquityCalculated           // Total equity = Perp AV + Spot + xyz AV
 	result["availableBalance"] = availableBalance           // Available balance (Perp + Spot if unified)

@@ -134,12 +134,16 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// Set stop loss and take profit
-	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
-		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
+	// Set stop loss and take profit (skip if AI didn't specify a price)
+	if decision.StopLoss > 0 {
+		if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
+			logger.Infof("  ⚠ Failed to set stop loss: %v", err)
+		}
 	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
-		logger.Infof("  ⚠ Failed to set take profit: %v", err)
+	if decision.TakeProfit > 0 {
+		if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
+			logger.Infof("  ⚠ Failed to set take profit: %v", err)
+		}
 	}
 
 	return nil
@@ -252,11 +256,15 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
 	// Set stop loss and take profit
-	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
-		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
+	if decision.StopLoss > 0 {
+		if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
+			logger.Infof("  ⚠ Failed to set stop loss: %v", err)
+		}
 	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
-		logger.Infof("  ⚠ Failed to set take profit: %v", err)
+	if decision.TakeProfit > 0 {
+		if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
+			logger.Infof("  ⚠ Failed to set take profit: %v", err)
+		}
 	}
 
 	return nil
@@ -304,6 +312,14 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, acti
 			}
 		}
 		logger.Infof("  📊 Using exchange position data: qty=%.8f, entry=%.2f", quantity, entryPrice)
+	}
+
+	// Cancel existing stop-loss and take-profit orders BEFORE closing position
+	// Critical: orphaned SL/TP orders could trigger after position is closed and create unintended positions
+	if err := at.trader.CancelStopOrders(decision.Symbol); err != nil {
+		logger.Warnf("  ⚠️ Failed to cancel stop orders for %s: %v (proceeding with close)", decision.Symbol, err)
+	} else {
+		logger.Infof("  🗑️ Cancelled stop/TP orders for %s", decision.Symbol)
 	}
 
 	// Close position
@@ -366,6 +382,14 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *kernel.Decision, act
 			}
 		}
 		logger.Infof("  📊 Using exchange position data: qty=%.8f, entry=%.2f", quantity, entryPrice)
+	}
+
+	// Cancel existing stop-loss and take-profit orders BEFORE closing position
+	// Critical: orphaned SL/TP orders could trigger after position is closed and create unintended positions
+	if err := at.trader.CancelStopOrders(decision.Symbol); err != nil {
+		logger.Warnf("  ⚠️ Failed to cancel stop orders for %s: %v (proceeding with close)", decision.Symbol, err)
+	} else {
+		logger.Infof("  🗑️ Cancelled stop/TP orders for %s", decision.Symbol)
 	}
 
 	// Close position

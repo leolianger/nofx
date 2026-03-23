@@ -112,6 +112,12 @@ func (at *AutoTrader) checkPositionDrawdown() {
 
 // emergencyClosePosition emergency close position function
 func (at *AutoTrader) emergencyClosePosition(symbol, side string) error {
+	// Cancel existing stop-loss and take-profit orders BEFORE closing position
+	// Critical: orphaned SL/TP orders could trigger after position is closed and create unintended positions
+	if err := at.trader.CancelStopOrders(symbol); err != nil {
+		logger.Warnf("  ⚠️ Emergency close: failed to cancel stop orders for %s: %v", symbol, err)
+	}
+
 	switch side {
 	case "long":
 		order, err := at.trader.CloseLong(symbol, 0) // 0 = close all
