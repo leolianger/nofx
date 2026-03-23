@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	"nofx/store"
 )
+
+var titleCaser = cases.Title(language.English)
 
 // Onboard handles first-time setup through natural language.
 // When there's no trader configured, the agent guides the user.
@@ -176,9 +180,9 @@ func (a *Agent) handleExchangeChoice(userID int64, text string, state *SetupStat
 	a.saveSetupState(userID, state)
 
 	if L == "zh" {
-		return fmt.Sprintf("✅ 选择了 *%s*\n\n请发送你的 API Key：", strings.Title(ex)), true
+		return fmt.Sprintf("✅ 选择了 *%s*\n\n请发送你的 API Key：", titleCaser.String(ex)), true
 	}
-	return fmt.Sprintf("✅ Selected *%s*\n\nPlease send your API Key:", strings.Title(ex)), true
+	return fmt.Sprintf("✅ Selected *%s*\n\nPlease send your API Key:", titleCaser.String(ex)), true
 }
 
 func (a *Agent) handleAIChoice(userID int64, text string, state *SetupState, L string) (string, bool) {
@@ -240,7 +244,7 @@ func (a *Agent) finishSetup(userID int64, state *SetupState, L string) (string, 
 		result = fmt.Sprintf("🎉 *配置完成！*\n\n"+
 			"• 交易所: %s\n"+
 			"• API Key: %s\n",
-			strings.Title(state.Exchange), maskedKey)
+			titleCaser.String(state.Exchange), maskedKey)
 		if state.AIModel != "" {
 			result += fmt.Sprintf("• AI 模型: %s\n", state.AIModel)
 		}
@@ -249,7 +253,7 @@ func (a *Agent) finishSetup(userID int64, state *SetupState, L string) (string, 
 		result = fmt.Sprintf("🎉 *Setup Complete!*\n\n"+
 			"• Exchange: %s\n"+
 			"• API Key: %s\n",
-			strings.Title(state.Exchange), maskedKey)
+			titleCaser.String(state.Exchange), maskedKey)
 		if state.AIModel != "" {
 			result += fmt.Sprintf("• AI Model: %s\n", state.AIModel)
 		}
@@ -329,7 +333,7 @@ func (a *Agent) createTraderFromSetup(state *SetupState) error {
 
 	// Create trader config
 	trader := &store.Trader{
-		Name:       fmt.Sprintf("NOFXi-%s", strings.Title(state.Exchange)),
+		Name:       fmt.Sprintf("NOFXi-%s", titleCaser.String(state.Exchange)),
 		UserID:     "default",
 		ExchangeID: exchangeID,
 		AIModelID:  aiModelID,

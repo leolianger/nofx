@@ -144,8 +144,10 @@ func (s *Server) setupRoutes() {
 		s.route(api, "GET", "/config", "Get system configuration", s.handleGetSystemConfig)
 
 		// Wallet validation (no authentication required — used by frontend config form)
-		api.POST("/wallet/validate", s.handleWalletValidate)
-		api.POST("/wallet/generate", s.handleWalletGenerate)
+		// Rate-limited to prevent DoS (key generation is computationally expensive)
+		walletLimited := api.Group("/", LoginRateLimitMiddleware(s.loginLimiter))
+		walletLimited.POST("/wallet/validate", s.handleWalletValidate)
+		walletLimited.POST("/wallet/generate", s.handleWalletGenerate)
 
 		// Crypto public key & config (needed by frontend before login for transport encryption)
 		api.GET("/crypto/config", s.cryptoHandler.HandleGetCryptoConfig)

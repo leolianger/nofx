@@ -115,9 +115,10 @@ func (s *Server) handleWalletGenerate(c *gin.Context) {
 	})
 }
 
+var walletHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
 func checkClaw402Health() string {
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://claw402.ai/health")
+	resp, err := walletHTTPClient.Get("https://claw402.ai/health")
 	if err != nil {
 		return "unreachable"
 	}

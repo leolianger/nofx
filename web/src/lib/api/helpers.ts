@@ -36,5 +36,9 @@ export async function handleJSONResponse<T>(res: Response): Promise<T> {
   if (!text) {
     return {} as T
   }
-  return JSON.parse(text) as T
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error(`Invalid JSON response: ${text.slice(0, 200)}`)
+  }
 }

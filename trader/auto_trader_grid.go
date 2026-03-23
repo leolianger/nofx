@@ -326,8 +326,12 @@ func (at *AutoTrader) InitializeGrid() error {
 		at.gridState.LowerPrice = gridConfig.LowerPrice
 	}
 
-	// Calculate grid spacing
-	at.gridState.GridSpacing = (at.gridState.UpperPrice - at.gridState.LowerPrice) / float64(gridConfig.GridCount-1)
+	// Calculate grid spacing (guard against division by zero when GridCount <= 1)
+	if gridConfig.GridCount > 1 {
+		at.gridState.GridSpacing = (at.gridState.UpperPrice - at.gridState.LowerPrice) / float64(gridConfig.GridCount-1)
+	} else {
+		at.gridState.GridSpacing = 0
+	}
 
 	// Initialize grid levels
 	at.initializeGridLevels(price, gridConfig)

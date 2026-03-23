@@ -295,7 +295,12 @@ func (at *AutoTrader) autoAdjustGrid() {
 	}
 
 	// Recalculate grid spacing based on new bounds
-	at.gridState.GridSpacing = (at.gridState.UpperPrice - at.gridState.LowerPrice) / float64(gridConfig.GridCount-1)
+	// Guard against division by zero when GridCount <= 1
+	if gridConfig.GridCount > 1 {
+		at.gridState.GridSpacing = (at.gridState.UpperPrice - at.gridState.LowerPrice) / float64(gridConfig.GridCount-1)
+	} else {
+		at.gridState.GridSpacing = 0
+	}
 
 	logger.Infof("[Grid] New bounds: $%.2f - $%.2f, spacing: $%.2f",
 		at.gridState.LowerPrice, at.gridState.UpperPrice, at.gridState.GridSpacing)

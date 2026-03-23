@@ -394,6 +394,14 @@ func (t *LighterTraderV2) submitOrder(txType int, txInfo string) (map[string]int
 		return nil, err
 	}
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snippet := string(respBody)
+		if len(snippet) > 512 {
+			snippet = snippet[:512] + "..."
+		}
+		return nil, fmt.Errorf("Lighter sendTx HTTP error (status %d): %s", resp.StatusCode, snippet)
+	}
+
 	// Parse response
 	var sendResp SendTxResponse
 	if err := json.Unmarshal(respBody, &sendResp); err != nil {

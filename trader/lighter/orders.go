@@ -246,6 +246,14 @@ func (t *LighterTraderV2) GetActiveOrders(symbol string) ([]OrderResponse, error
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snippet := string(body)
+		if len(snippet) > 512 {
+			snippet = snippet[:512] + "..."
+		}
+		return nil, fmt.Errorf("GetActiveOrders API HTTP error (status %d): %s", resp.StatusCode, snippet)
+	}
+
 	logger.Debugf("📋 LIGHTER GetActiveOrders raw response: %s", string(body))
 
 	// Parse response - Lighter API uses "orders" field, not "data"
