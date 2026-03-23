@@ -181,6 +181,12 @@ func main() {
 	<-quit
 	logger.Info("📴 Shutdown signal received, closing system...")
 
+	// Gracefully shutdown HTTP server (drain in-flight requests)
+	if err := server.Shutdown(); err != nil {
+		logger.Warnf("⚠️ HTTP server shutdown error: %v", err)
+	}
+	logger.Info("✅ HTTP server stopped")
+
 	// Stop all traders
 	traderManager.StopAll()
 	logger.Info("✅ System shut down safely")

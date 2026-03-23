@@ -144,8 +144,7 @@ export function ChartTabs({ traderId, selectedSymbol, updateKey, exchangeId }: C
 
 
   return (
-    <div className={`nofx-glass rounded-lg border border-white/5 relative z-10 w-full flex flex-col transition-all duration-300 ${typeof window !== 'undefined' && window.innerWidth < 768 ? 'h-[500px]' : 'h-[600px]'
-      }`}>
+    <div className="nofx-glass rounded-lg border border-white/5 relative z-10 w-full flex flex-col transition-all duration-300 h-[500px] md:h-[600px]">
       {/* 
         Premium Professional Toolbar 
         Mobile: Single row, horizontal scroll with gradient mask

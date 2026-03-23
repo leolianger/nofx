@@ -18,6 +18,7 @@ import { StrategyMarketPage } from './pages/StrategyMarketPage'
 import { DataPage } from './pages/DataPage'
 import { LoginRequiredOverlay } from './components/auth/LoginRequiredOverlay'
 import HeaderBar from './components/common/HeaderBar'
+import { ErrorBoundary } from './components/common/ErrorBoundary'
 import { LanguageProvider, useLanguage } from './contexts/LanguageContext'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ConfirmDialogProvider } from './components/common/ConfirmDialog'
@@ -396,7 +397,9 @@ function App() {
           onLoginRequired={handleLoginRequired}
           onPageChange={navigateToPage}
         />
-        <SettingsPage />
+        <ErrorBoundary>
+          <SettingsPage />
+        </ErrorBoundary>
       </div>
     )
   }
@@ -474,6 +477,7 @@ function App() {
 
       {/* Main Content with Page Transitions */}
       <main className="min-h-screen pt-16">
+        <ErrorBoundary>
         <AnimatePresence mode="wait">
           <motion.div
             key={currentPage}
@@ -536,6 +540,7 @@ function App() {
             )}
           </motion.div>
         </AnimatePresence>
+        </ErrorBoundary>
       </main>
 
       {/* Footer */}
