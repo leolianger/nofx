@@ -536,7 +536,7 @@ function Claw402ConfigForm({
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {CLAW402_MODELS.map((m) => {
-            const isSelected = (modelName || 'deepseek') === m.id
+            const isSelected = (modelName || 'glm-5') === m.id
             return (
               <button
                 key={m.id}
