@@ -516,27 +516,13 @@ func (s *Server) handleStrategyTestRun(c *gin.Context) {
 		req.PromptVariant = "balanced"
 	}
 
-	claw402WalletKey := ""
-	if req.AIModelID != "" {
-		model, err := s.store.AIModel().Get(userID, req.AIModelID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":       "Failed to load selected AI model",
-				"ai_response": "",
-			})
-			return
-		}
-
-		if model.Provider == "claw402" {
-			claw402WalletKey = string(model.APIKey)
-			if claw402WalletKey == "" {
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error":       "Selected claw402 model is missing wallet private key",
-					"ai_response": "",
-				})
-				return
-			}
-		}
+	claw402WalletKey, err := s.resolveStrategyDataWalletKey(userID, req.AIModelID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":       err.Error(),
+			"ai_response": "",
+		})
+		return
 	}
 
 	// Create strategy engine to build prompt
@@ -719,4 +705,39 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 	}
 
 	return response, nil
+}
+
+func (s *Server) resolveStrategyDataWalletKey(userID, selectedModelID string) (string, error) {
+	if selectedModelID != "" {
+		model, err := s.store.AIModel().Get(userID, selectedModelID)
+		if err != nil {
+			return "", fmt.Errorf("failed to load selected AI model")
+		}
+
+		if model.Provider == "claw402" {
+			walletKey := string(model.APIKey)
+			if walletKey == "" {
+				return "", fmt.Errorf("selected claw402 model is missing wallet private key")
+			}
+			return walletKey, nil
+		}
+	}
+
+	models, err := s.store.AIModel().List(userID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load AI models")
+	}
+
+	for _, model := range models {
+		if model == nil || model.Provider != "claw402" {
+			continue
+		}
+
+		walletKey := string(model.APIKey)
+		if walletKey != "" {
+			return walletKey, nil
+		}
+	}
+
+	return "", nil
 }
