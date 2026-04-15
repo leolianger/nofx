@@ -703,6 +703,8 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		traderConfig.CustomAPIKey = string(aiModelCfg.APIKey)
 	}
 
+	traderConfig.Claw402WalletKey = resolveTraderDataWalletKey(st, traderCfg.UserID, aiModelCfg)
+
 	// Create trader instance
 	at, err := trader.NewAutoTrader(traderConfig, st, traderCfg.UserID)
 	if err != nil {
@@ -741,3 +743,31 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 	return nil
 }
 
+func resolveTraderDataWalletKey(st *store.Store, userID string, selectedModel *store.AIModel) string {
+	if selectedModel != nil && selectedModel.Provider == "claw402" {
+		if walletKey := string(selectedModel.APIKey); walletKey != "" {
+			return walletKey
+		}
+	}
+
+	if st == nil {
+		return ""
+	}
+
+	models, err := st.AIModel().List(userID)
+	if err != nil {
+		logger.Warnf("⚠️ Failed to load claw402 wallet for trader data routing: %v", err)
+		return ""
+	}
+
+	for _, model := range models {
+		if model == nil || model.Provider != "claw402" {
+			continue
+		}
+		if walletKey := string(model.APIKey); walletKey != "" {
+			return walletKey
+		}
+	}
+
+	return ""
+}
