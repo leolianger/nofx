@@ -1,34 +1,76 @@
 import React, { useState, useEffect } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useAuth } from '../../contexts/AuthContext'
 import { useLanguage } from '../../contexts/LanguageContext'
 import { t } from '../../i18n/translations'
 import { DeepVoidBackground } from '../common/DeepVoidBackground'
+import { LanguageSwitcher } from '../common/LanguageSwitcher'
+import { OnboardingModeSelector } from './OnboardingModeSelector'
+import type { UserMode } from '../../lib/onboarding'
+import { invalidateSystemConfig } from '../../lib/config'
 
 export function LoginPage() {
   const { language } = useLanguage()
   const { login } = useAuth()
+  const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [expiredToastId, setExpiredToastId] = useState<string | number | null>(null)
+  const [expiredToastId, setExpiredToastId] = useState<string | number | null>(
+    null
+  )
+  const [mode, setMode] = useState<UserMode>('beginner')
 
+  // Clean up stale auth state once on mount
+  useEffect(() => {
+    localStorage.removeItem('auth_token')
+    localStorage.removeItem('auth_user')
+    localStorage.removeItem('user_id')
+  }, [])
+
+  // Show session-expired toast (re-runs on language change to update text)
   useEffect(() => {
     if (sessionStorage.getItem('from401') === 'true') {
-      const id = toast.warning(t('sessionExpired', language), { duration: Infinity })
+      const id = toast.warning(t('sessionExpired', language), {
+        duration: Infinity,
+      })
       setExpiredToastId(id)
       sessionStorage.removeItem('from401')
     }
   }, [language])
 
+  const handleResetAccount = async () => {
+    if (!window.confirm(t('forgotAccountConfirm', language))) return
+    try {
+      const res = await fetch('/api/reset-account', { method: 'POST' })
+      if (res.ok) {
+        localStorage.removeItem('auth_token')
+        localStorage.removeItem('auth_user')
+        localStorage.removeItem('user_id')
+        sessionStorage.removeItem('from401')
+        invalidateSystemConfig()
+        toast.success(t('forgotAccountSuccess', language))
+        setTimeout(() => {
+          navigate('/setup')
+        }, 1500)
+      } else {
+        const data = await res.json()
+        toast.error(data.error || 'Reset failed')
+      }
+    } catch {
+      toast.error('Network error')
+    }
+  }
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setLoading(true)
-    const result = await login(email, password)
+    const result = await login(email, password, mode)
     setLoading(false)
     if (result.success) {
       if (expiredToastId) toast.dismiss(expiredToastId)
@@ -41,25 +83,31 @@ export function LoginPage() {
 
   return (
     <DeepVoidBackground disableAnimation>
+      <LanguageSwitcher />
+
       <div className="flex-1 flex items-center justify-center px-4 py-16">
         <div className="w-full max-w-sm">
-
           {/* Logo + Title */}
           <div className="text-center mb-10">
             <div className="flex justify-center mb-5">
               <div className="relative">
                 <div className="absolute -inset-3 bg-nofx-gold/15 rounded-full blur-2xl" />
-                <img src="/icons/nofx.svg" alt="NOFX" className="w-14 h-14 relative z-10" />
+                <img
+                  src="/icons/nofx.svg"
+                  alt="NOFX"
+                  className="w-14 h-14 relative z-10"
+                />
               </div>
             </div>
-            <h1 className="text-2xl font-bold text-white mb-1.5">Welcome back</h1>
+            <h1 className="text-2xl font-bold text-white mb-1.5">
+              Welcome back
+            </h1>
             <p className="text-zinc-500 text-sm">Sign in to your account</p>
           </div>
 
           {/* Card */}
           <div className="bg-zinc-900/60 backdrop-blur-xl border border-zinc-800/80 rounded-2xl p-8 shadow-2xl">
             <form onSubmit={handleLogin} className="space-y-5">
-
               {/* Email */}
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-2">
@@ -84,7 +132,7 @@ export function LoginPage() {
                   </label>
                   <button
                     type="button"
-                    onClick={() => window.location.href = '/reset-password'}
+                    onClick={() => navigate('/reset-password')}
                     className="text-xs text-zinc-500 hover:text-nofx-gold transition-colors"
                   >
                     {t('forgotPassword', language)}
@@ -109,6 +157,12 @@ export function LoginPage() {
                 </div>
               </div>
 
+              <OnboardingModeSelector
+                language={language}
+                mode={mode}
+                onChange={setMode}
+              />
+
               {/* Error */}
               {error && (
                 <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
@@ -122,11 +176,22 @@ export function LoginPage() {
                 disabled={loading}
                 className="w-full bg-nofx-gold hover:bg-yellow-400 active:scale-[0.98] text-black font-semibold py-3 rounded-xl text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-2"
               >
-                {loading ? t('loggingIn', language) || 'Signing in...' : t('signIn', language) || 'Sign In'}
+                {loading
+                  ? t('loggingIn', language) || 'Signing in...'
+                  : t('signIn', language) || 'Sign In'}
               </button>
             </form>
-          </div>
 
+            <div className="mt-4 text-center">
+              <button
+                type="button"
+                onClick={handleResetAccount}
+                className="text-xs text-zinc-600 hover:text-red-400 transition-colors"
+              >
+                {t('forgotAccount', language)}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </DeepVoidBackground>

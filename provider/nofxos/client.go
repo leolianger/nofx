@@ -21,11 +21,11 @@ const (
 
 // Client is the NofxOS API client
 type Client struct {
-	BaseURL      string
-	AuthKey      string
-	Timeout      time.Duration
-	mu           sync.RWMutex
-	claw402      *Claw402DataClient // If set, routes requests through claw402
+	BaseURL string
+	AuthKey string
+	Timeout time.Duration
+	mu      sync.RWMutex
+	claw402 *Claw402DataClient // If set, routes requests through claw402
 }
 
 var (
@@ -60,6 +60,13 @@ func NewClient(baseURL, authKey string) *Client {
 	}
 }
 
+// SetClaw402 enables routing requests through claw402 payment gateway.
+func (c *Client) SetClaw402(claw402Client *Claw402DataClient) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.claw402 = claw402Client
+}
+
 // SetConfig updates client configuration
 func (c *Client) SetConfig(baseURL, authKey string) {
 	c.mu.Lock()
@@ -70,13 +77,6 @@ func (c *Client) SetConfig(baseURL, authKey string) {
 	if authKey != "" {
 		c.AuthKey = authKey
 	}
-}
-
-// SetClaw402 enables routing requests through claw402 payment gateway.
-func (c *Client) SetClaw402(claw402Client *Claw402DataClient) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.claw402 = claw402Client
 }
 
 // GetBaseURL returns the current base URL
@@ -108,7 +108,6 @@ func (c *Client) doRequest(endpoint string) ([]byte, error) {
 		return claw402Client.DoRequest(endpoint)
 	}
 
-	// Direct call to nofxos.ai
 	url := baseURL + endpoint
 	if !strings.Contains(url, "auth=") {
 		if strings.Contains(url, "?") {

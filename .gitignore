@@ -27,6 +27,8 @@ Thumbs.db
 *.tmp
 *.bak
 *.backup
+.cache/
+.gh-config/
 
 # 环境变量
 .env
@@ -124,3 +126,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 PR_DESCRIPTION.md
+
+# Go build artifacts
+/nofx-server

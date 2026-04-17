@@ -30,7 +30,7 @@ import {
   Upload,
   Globe,
 } from 'lucide-react'
-import type { Strategy, StrategyConfig, AIModel } from '../types'
+import type { Strategy, StrategyConfig, AIModel, GridStrategyConfig } from '../types'
 import { confirmToast, notify } from '../lib/notify'
 import { CoinSourceEditor } from '../components/strategy/CoinSourceEditor'
 import { IndicatorEditor } from '../components/strategy/IndicatorEditor'
@@ -38,6 +38,7 @@ import { RiskControlEditor } from '../components/strategy/RiskControlEditor'
 import { PromptSectionsEditor } from '../components/strategy/PromptSectionsEditor'
 import { PublishSettingsEditor } from '../components/strategy/PublishSettingsEditor'
 import { GridConfigEditor, defaultGridConfig } from '../components/strategy/GridConfigEditor'
+import { TokenEstimateBar } from '../components/strategy/TokenEstimateBar'
 import { DeepVoidBackground } from '../components/common/DeepVoidBackground'
 import { t } from '../i18n/translations'
 
@@ -52,6 +53,7 @@ export function StrategyStudioPage() {
   const [editingConfig, setEditingConfig] = useState<StrategyConfig | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [estimatedTokens, setEstimatedTokens] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [hasChanges, setHasChanges] = useState(false)
 
@@ -92,6 +94,7 @@ export function StrategyStudioPage() {
     duration_ms?: number
   } | null>(null)
   const [isRunningAiTest, setIsRunningAiTest] = useState(false)
+  const gridConfigCacheRef = useRef<Record<string, GridStrategyConfig>>({})
 
   const toggleSection = (section: keyof typeof expandedSections) => {
     setExpandedSections((prev) => ({
@@ -153,6 +156,12 @@ export function StrategyStudioPage() {
     fetchStrategies()
     fetchAiModels()
   }, [fetchStrategies, fetchAiModels])
+
+  useEffect(() => {
+    if (!selectedStrategy?.id || !editingConfig?.grid_config) return
+
+    gridConfigCacheRef.current[selectedStrategy.id] = { ...editingConfig.grid_config }
+  }, [selectedStrategy?.id, editingConfig?.grid_config])
 
   // Track previous language to detect actual changes
   const prevLanguageRef = useRef(language)
@@ -246,6 +255,30 @@ export function StrategyStudioPage() {
   // Delete strategy
   const handleDeleteStrategy = async (id: string) => {
     if (!token) return
+    const strategy = strategies.find((item) => item.id === id)
+
+    if (strategy?.is_active) {
+      notify.error(tr('cannotDeleteActiveStrategy'))
+      return
+    }
+
+    // Check if strategy is in use by any trader before showing dialog
+    try {
+      const tradersResp = await fetch(`${API_BASE}/api/my-traders`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (tradersResp.ok) {
+        const traderList = await tradersResp.json()
+        const using = traderList.filter((t: any) => t.strategy_id === id)
+        if (using.length > 0) {
+          const names = using.map((t: any) => t.trader_name).join(', ')
+          notify.error(`Strategy is in use by: ${names}`)
+          return
+        }
+      }
+    } catch {
+      // fetch failed — proceed, backend will guard
+    }
 
     const confirmed = await confirmToast(
       tr('confirmDeleteStrategy'),
@@ -262,9 +295,12 @@ export function StrategyStudioPage() {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (!response.ok) throw new Error('Failed to delete strategy')
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        notify.error(data.error || 'Failed to delete strategy')
+        return
+      }
       notify.success(tr('strategyDeleted'))
-      // Clear selection if deleted strategy was selected
       if (selectedStrategy?.id === id) {
         setSelectedStrategy(null)
         setEditingConfig(null)
@@ -272,9 +308,7 @@ export function StrategyStudioPage() {
       }
       await fetchStrategies()
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error'
-      setError(errorMsg)
-      notify.error(errorMsg)
+      notify.error(err instanceof Error ? err.message : 'Unknown error')
     }
   }
 
@@ -378,6 +412,10 @@ export function StrategyStudioPage() {
   // Save strategy
   const handleSaveStrategy = async () => {
     if (!token || !selectedStrategy || !editingConfig) return
+    if (estimatedTokens >= 128000 && currentStrategyType === 'ai_trading') {
+      notify.warning(tr('tokenExceedWarning'))
+      // continue with save
+    }
     setIsSaving(true)
     try {
       // Always sync the config language with the current interface language
@@ -418,11 +456,48 @@ export function StrategyStudioPage() {
     section: K,
     value: StrategyConfig[K]
   ) => {
-    if (!editingConfig) return
-    setEditingConfig({
-      ...editingConfig,
-      [section]: value,
+    setEditingConfig((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        [section]: value,
+      }
     })
+    setHasChanges(true)
+  }
+
+  const handleStrategyTypeChange = (strategyType: NonNullable<StrategyConfig['strategy_type']>) => {
+    if (selectedStrategy?.is_default) return
+
+    const cachedGridConfig = selectedStrategy?.id
+      ? gridConfigCacheRef.current[selectedStrategy.id]
+      : null
+
+    setEditingConfig((prev) => {
+      if (!prev) return prev
+
+      if (strategyType === 'ai_trading') {
+        if (selectedStrategy?.id && prev.grid_config) {
+          gridConfigCacheRef.current[selectedStrategy.id] = { ...prev.grid_config }
+        }
+
+        return {
+          ...prev,
+          strategy_type: 'ai_trading',
+          // Use null so the field is preserved in JSON and backend merge can actually clear it.
+          grid_config: null,
+        }
+      }
+
+      return {
+        ...prev,
+        strategy_type: 'grid_trading',
+        grid_config: cachedGridConfig ?? prev.grid_config ?? { ...defaultGridConfig },
+      }
+    })
+
+    setPromptPreview(null)
+    setAiTestResult(null)
     setHasChanges(true)
   }
 
@@ -641,7 +716,7 @@ export function StrategyStudioPage() {
               <Sparkles className="w-5 h-5 text-black" />
             </div>
             <div>
-              <h1 className="text-lg font-bold text-nofx-text">{tr('strategyStudio')}</h1>
+              <h1 className="text-lg font-bold text-nofx-text">{tr('title')}</h1>
               <p className="text-xs text-nofx-text-muted">{tr('subtitle')}</p>
             </div>
           </div>
@@ -681,7 +756,7 @@ export function StrategyStudioPage() {
                 </button>
               </div>
             </div>
-            <div className="space-y-1">
+            <div className="space-y-2">
               {strategies.map((strategy) => (
                 <div
                   key={strategy.id}
@@ -694,11 +769,11 @@ export function StrategyStudioPage() {
                   }}
                   className={`group px-2 py-2 rounded-lg cursor-pointer transition-all ${selectedStrategy?.id === strategy.id
                     ? 'ring-1 ring-nofx-gold/50 bg-nofx-gold/10 shadow-[0_0_15px_rgba(240,185,11,0.1)]'
-                    : 'hover:bg-nofx-bg-lighter/60 hover:ring-1 hover:ring-nofx-gold/20 bg-transparent'
+                    : 'hover:bg-nofx-bg-lighter/60 ring-1 ring-white/10 hover:ring-nofx-gold/20 bg-transparent'
                     }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm truncate text-nofx-text">{strategy.name}</span>
+                  <div className="flex items-start justify-between">
+                    <span className={`line-clamp-2 text-nofx-text ${language === 'zh' ? 'text-sm' : 'text-xs'}`}>{strategy.name}</span>
                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={(e) => { e.stopPropagation(); handleExportStrategy(strategy) }}
@@ -718,8 +793,9 @@ export function StrategyStudioPage() {
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); handleDeleteStrategy(strategy.id) }}
-                            className="p-1 rounded hover:bg-nofx-danger/20 text-nofx-danger"
-                            title={tr('deleteTooltip')}
+                            disabled={strategy.is_active}
+                            className="p-1 rounded hover:bg-nofx-danger/20 text-nofx-danger disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                            title={strategy.is_active ? tr('cannotDeleteActiveStrategy') : tr('deleteTooltip')}
                           >
                             <Trash2 className="w-3 h-3" />
                           </button>
@@ -807,6 +883,13 @@ export function StrategyStudioPage() {
                 </div>
               </div>
 
+              {/* Token Estimate Bar */}
+              {currentStrategyType === 'ai_trading' && (
+                <div className="mb-4">
+                  <TokenEstimateBar config={editingConfig} language={language} onTokenCountChange={setEstimatedTokens} />
+                </div>
+              )}
+
               {/* Strategy Type Selector */}
               {editingConfig && (
                 <div className="mb-4 p-4 rounded-lg bg-nofx-bg-lighter border border-nofx-gold/20">
@@ -816,13 +899,7 @@ export function StrategyStudioPage() {
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <button
-                      onClick={() => {
-                        if (!selectedStrategy?.is_default) {
-                          updateConfig('strategy_type', 'ai_trading')
-                          // Clear grid config when switching to AI trading
-                          updateConfig('grid_config', undefined)
-                        }
-                      }}
+                      onClick={() => handleStrategyTypeChange('ai_trading')}
                       disabled={selectedStrategy?.is_default}
                       className={`p-3 rounded-lg border transition-all ${
                         (!editingConfig.strategy_type || editingConfig.strategy_type === 'ai_trading')
@@ -837,15 +914,7 @@ export function StrategyStudioPage() {
                       <p className="text-xs text-nofx-text-muted text-left">{tr('aiTradingDesc')}</p>
                     </button>
                     <button
-                      onClick={() => {
-                        if (!selectedStrategy?.is_default) {
-                          updateConfig('strategy_type', 'grid_trading')
-                          // Initialize grid config if not exists
-                          if (!editingConfig.grid_config) {
-                            updateConfig('grid_config', defaultGridConfig)
-                          }
-                        }
-                      }}
+                      onClick={() => handleStrategyTypeChange('grid_trading')}
                       disabled={selectedStrategy?.is_default}
                       className={`p-3 rounded-lg border transition-all ${
                         editingConfig.strategy_type === 'grid_trading'

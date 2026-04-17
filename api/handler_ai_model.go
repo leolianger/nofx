@@ -10,6 +10,7 @@ import (
 	"nofx/crypto"
 	"nofx/logger"
 	"nofx/security"
+	"nofx/wallet"
 
 	"github.com/gin-gonic/gin"
 )
@@ -31,6 +32,8 @@ type SafeModelConfig struct {
 	Enabled         bool   `json:"enabled"`
 	CustomAPIURL    string `json:"customApiUrl"`    // Custom API URL (usually not sensitive)
 	CustomModelName string `json:"customModelName"` // Custom model name (not sensitive)
+	WalletAddress   string `json:"walletAddress,omitempty"`
+	BalanceUSDC     string `json:"balanceUsdc,omitempty"`
 }
 
 type UpdateModelConfigRequest struct {
@@ -75,7 +78,7 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 	// Convert to safe response structure, remove sensitive information
 	safeModels := make([]SafeModelConfig, len(models))
 	for i, model := range models {
-		safeModels[i] = SafeModelConfig{
+		safeModel := SafeModelConfig{
 			ID:              model.ID,
 			Name:            model.Name,
 			Provider:        model.Provider,
@@ -83,6 +86,19 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 			CustomAPIURL:    model.CustomAPIURL,
 			CustomModelName: model.CustomModelName,
 		}
+
+		if model.Provider == "claw402" {
+			if privateKey := strings.TrimSpace(model.APIKey.String()); privateKey != "" {
+				if walletAddress, addrErr := walletAddressFromPrivateKey(privateKey); addrErr == nil {
+					safeModel.WalletAddress = walletAddress
+					safeModel.BalanceUSDC = wallet.QueryUSDCBalanceStr(walletAddress)
+				} else {
+					logger.Warnf("⚠️ Failed to derive claw402 wallet address for model %s: %v", model.ID, addrErr)
+				}
+			}
+		}
+
+		safeModels[i] = safeModel
 	}
 
 	c.JSON(http.StatusOK, safeModels)
@@ -199,11 +215,11 @@ func (s *Server) handleGetSupportedModels(c *gin.Context) {
 		{"id": "qwen", "name": "Qwen", "provider": "qwen", "defaultModel": "qwen3-max"},
 		{"id": "openai", "name": "OpenAI", "provider": "openai", "defaultModel": "gpt-5.1"},
 		{"id": "claude", "name": "Claude", "provider": "claude", "defaultModel": "claude-opus-4-6"},
-		{"id": "gemini", "name": "Google Gemini", "provider": "gemini", "defaultModel": "gemini-3-pro-preview"},
+		{"id": "gemini", "name": "Google Gemini", "provider": "gemini", "defaultModel": "gemini-3.1-pro"},
 		{"id": "grok", "name": "Grok (xAI)", "provider": "grok", "defaultModel": "grok-3-latest"},
 		{"id": "kimi", "name": "Kimi (Moonshot)", "provider": "kimi", "defaultModel": "moonshot-v1-auto"},
 		{"id": "minimax", "name": "MiniMax", "provider": "minimax", "defaultModel": "MiniMax-M2.7"},
-		{"id": "claw402", "name": "Claw402 (Base USDC)", "provider": "claw402", "defaultModel": "deepseek"},
+		{"id": "claw402", "name": "Claw402 (Base USDC)", "provider": "claw402", "defaultModel": "glm-5"},
 	}
 
 	c.JSON(http.StatusOK, supportedModels)

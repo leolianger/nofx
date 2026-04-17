@@ -393,6 +393,9 @@ func (client *Client) String() string {
 		client.Provider, client.Model)
 }
 
+// BaseClient returns the underlying *Client (satisfies ClientEmbedder interface).
+func (c *Client) BaseClient() *Client { return c }
+
 // IsRetryableError determines if error is retryable (network errors, timeouts, etc.)
 func (client *Client) IsRetryableError(err error) bool {
 	errStr := err.Error()
@@ -736,21 +739,24 @@ func (client *Client) CallWithRequestStream(req *Request, onChunk func(string)) 
 		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	return ParseSSEStream(resp.Body, onChunk, func() {
+	text, usage, err := ParseSSEStream(resp.Body, onChunk, func() {
 		select {
 		case resetCh <- struct{}{}:
 		default:
 		}
 	})
+	ReportStreamUsage(usage, client.Provider, client.Model)
+	return text, err
 }
 
 // ParseSSEStream reads an SSE response body, accumulates text deltas,
 // and calls onChunk with the full accumulated text after each chunk.
 // If onLine is non-nil, it is called after each raw SSE line is scanned
 // (useful for resetting idle-timeout watchdogs).
-// Returns the complete accumulated text.
-func ParseSSEStream(body io.Reader, onChunk func(string), onLine func()) (string, error) {
+// Returns the complete accumulated text and any parsed token usage (nil if absent).
+func ParseSSEStream(body io.Reader, onChunk func(string), onLine func()) (string, *TokenUsage, error) {
 	var accumulated strings.Builder
+	var usage *TokenUsage
 	scanner := bufio.NewScanner(body)
 
 	for scanner.Scan() {
@@ -774,10 +780,24 @@ func ParseSSEStream(body io.Reader, onChunk func(string), onLine func()) (string
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue // skip malformed chunks
 		}
+
+		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
+			usage = &TokenUsage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
+		}
+
 		if len(chunk.Choices) == 0 {
 			continue
 		}
@@ -794,8 +814,23 @@ func ParseSSEStream(body io.Reader, onChunk func(string), onLine func()) (string
 	}
 
 	if err := scanner.Err(); err != nil {
-		return accumulated.String(), fmt.Errorf("stream interrupted: %w", err)
+		return accumulated.String(), usage, fmt.Errorf("stream interrupted: %w", err)
 	}
 
-	return accumulated.String(), nil
+	return accumulated.String(), usage, nil
+}
+
+// ReportStreamUsage fires TokenUsageCallback with the given usage, provider, and model.
+// No-op if usage is nil or callback is unset.
+func ReportStreamUsage(usage *TokenUsage, provider, model string) {
+	if usage == nil || TokenUsageCallback == nil || usage.TotalTokens <= 0 {
+		return
+	}
+	TokenUsageCallback(TokenUsage{
+		Provider:         provider,
+		Model:            model,
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+	})
 }

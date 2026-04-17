@@ -6,6 +6,8 @@ export interface AIModel {
   apiKey?: string
   customApiUrl?: string
   customModelName?: string
+  walletAddress?: string
+  balanceUsdc?: string
 }
 
 export interface TelegramConfig {
@@ -37,6 +39,30 @@ export interface Exchange {
   lighterPrivateKey?: string
   lighterApiKeyPrivateKey?: string
   lighterApiKeyIndex?: number
+}
+
+export type ExchangeAccountStatus =
+  | 'ok'
+  | 'disabled'
+  | 'missing_credentials'
+  | 'invalid_credentials'
+  | 'permission_denied'
+  | 'unavailable'
+
+export interface ExchangeAccountState {
+  exchange_id: string
+  status: ExchangeAccountStatus
+  display_balance?: string
+  asset?: string
+  total_equity?: number
+  available_balance?: number
+  checked_at: string
+  error_code?: string
+  error_message?: string
+}
+
+export interface ExchangeAccountStateResponse {
+  states: Record<string, ExchangeAccountState>
 }
 
 export interface CreateExchangeRequest {
@@ -109,4 +135,27 @@ export interface UpdateExchangeConfigRequest {
       lighter_api_key_index?: number
     }
   }
+}
+
+export interface BeginnerOnboardingResponse {
+  address: string
+  private_key: string
+  chain: string
+  asset: string
+  provider: string
+  default_model: string
+  configured_model_id: string
+  balance_usdc: string
+  env_saved: boolean
+  env_path?: string
+  reused_existing: boolean
+  env_warning?: string
+}
+
+export interface CurrentBeginnerWalletResponse {
+  found: boolean
+  address?: string
+  balance_usdc?: string
+  source?: string
+  claw402_status?: string
 }

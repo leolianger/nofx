@@ -51,6 +51,33 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 		engine = NewStrategyEngine(&defaultConfig)
 	}
 
+	// Clamp strategy limits to prevent token overflow
+	engineConfig := engine.GetConfig()
+	engineConfig.ClampLimits()
+
+	// Token estimation check — block if exceeding the specific model's context limit
+	estimate := engineConfig.EstimateTokens()
+
+	// Determine context limit for the specific model being used
+	contextLimit := 131072 // safe default (strictest common limit)
+	var providerName string
+	if embedder, ok := mcpClient.(mcp.ClientEmbedder); ok {
+		base := embedder.BaseClient()
+		providerName = base.Provider
+		contextLimit = store.GetContextLimitForClient(base.Provider, base.Model)
+	}
+
+	if estimate.Total > contextLimit {
+		logger.Errorf("🚫 Token estimate %d exceeds %s context limit %d — blocking analysis",
+			estimate.Total, providerName, contextLimit)
+		return nil, fmt.Errorf("estimated %d tokens exceeds model context limit of %d; reduce coins, timeframes, or K-line count",
+			estimate.Total, contextLimit)
+	}
+	if estimate.Total*100/contextLimit >= 80 {
+		logger.Infof("⚠️  Token estimate %d — approaching %s context limit %d",
+			estimate.Total, providerName, contextLimit)
+	}
+
 	// 1. Fetch market data using strategy config
 	if len(ctx.MarketDataMap) == 0 {
 		if err := fetchMarketDataWithStrategy(ctx, engine); err != nil {

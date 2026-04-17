@@ -153,7 +153,7 @@ export function AdvancedChart({
     try {
       const limit = 1500
       const klineUrl = `/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&exchange=${exchange}`
-      const result = await httpClient.get(klineUrl)
+      const result = await httpClient.request(klineUrl, { silent: true })
 
       if (!result.success || !result.data) {
         throw new Error('Failed to fetch kline data')
@@ -234,7 +234,10 @@ export function AdvancedChart({
   const fetchOrders = async (traderID: string, symbol: string): Promise<OrderMarker[]> => {
     try {
       // Fetch filled orders, up to 200 for more history
-      const result = await httpClient.get(`/api/orders?trader_id=${traderID}&symbol=${symbol}&status=FILLED&limit=200`)
+      const result = await httpClient.request(
+        `/api/orders?trader_id=${traderID}&symbol=${symbol}&status=FILLED&limit=200`,
+        { silent: true }
+      )
 
       if (!result.success || !result.data) {
         return []
@@ -301,7 +304,10 @@ export function AdvancedChart({
   // Fetch exchange open orders (TP/SL)
   const fetchOpenOrders = async (traderID: string, symbol: string): Promise<OpenOrder[]> => {
     try {
-      const result = await httpClient.get(`/api/open-orders?trader_id=${traderID}&symbol=${symbol}`)
+      const result = await httpClient.request(
+        `/api/open-orders?trader_id=${traderID}&symbol=${symbol}`,
+        { silent: true }
+      )
 
       if (!result.success || !result.data) {
         console.warn('[AdvancedChart] No open orders found')

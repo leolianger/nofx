@@ -29,7 +29,7 @@ export function ChartWithOrdersSimple({
         const limit = 100
         const klineUrl = `/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
 
-        const klineResult = await httpClient.get(klineUrl)
+        const klineResult = await httpClient.request(klineUrl, { silent: true })
 
         if (!klineResult.success || !klineResult.data) {
           throw new Error('Failed to fetch klines from our service')
@@ -40,7 +40,7 @@ export function ChartWithOrdersSimple({
         // 测试获取订单数据
         if (traderID) {
           const tradesUrl = `/api/trades?trader_id=${traderID}&symbol=${symbol}&limit=100`
-          const tradesResult = await httpClient.get(tradesUrl)
+          const tradesResult = await httpClient.request(tradesUrl, { silent: true })
 
           if (tradesResult.success && tradesResult.data) {
             setOrderCount(tradesResult.data.length)

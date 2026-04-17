@@ -19,14 +19,15 @@ import (
 
 // Server HTTP API server
 type Server struct {
-	router           *gin.Engine
-	traderManager    *manager.TraderManager
-	store            *store.Store
-	cryptoHandler    *CryptoHandler
-	httpServer       *http.Server
-	port             int
-	telegramReloadCh chan<- struct{} // signal Telegram bot to reload
-	loginLimiter     *LoginRateLimiter
+	router                    *gin.Engine
+	traderManager             *manager.TraderManager
+	store                     *store.Store
+	cryptoHandler             *CryptoHandler
+	exchangeAccountStateCache *ExchangeAccountStateCache
+	httpServer                *http.Server
+	port                      int
+	telegramReloadCh          chan<- struct{} // signal Telegram bot to reload
+	loginLimiter              *LoginRateLimiter
 }
 
 // NewServer Creates API server
@@ -46,12 +47,13 @@ func NewServer(traderManager *manager.TraderManager, st *store.Store, cryptoServ
 	cryptoHandler := NewCryptoHandler(cryptoService)
 
 	s := &Server{
-		router:       router,
-		traderManager: traderManager,
-		store:         st,
-		cryptoHandler: cryptoHandler,
-		port:          port,
-		loginLimiter:  NewLoginRateLimiter(),
+		router:                    router,
+		traderManager:             traderManager,
+		store:                     st,
+		cryptoHandler:             cryptoHandler,
+		exchangeAccountStateCache: NewExchangeAccountStateCache(),
+		port:                      port,
+		loginLimiter:              NewLoginRateLimiter(),
 	}
 
 	// Setup routes
@@ -169,11 +171,13 @@ func (s *Server) setupRoutes() {
 
 		// Public strategy market (no authentication required)
 		s.route(api, "GET", "/strategies/public", "Public strategy market", s.handlePublicStrategies)
+		s.route(api, "POST", "/strategies/estimate-tokens", "Estimate token usage for a strategy config", s.handleEstimateTokens)
 
 		// Authentication related routes (no authentication required, rate-limited)
 		authLimited := api.Group("/", LoginRateLimitMiddleware(s.loginLimiter))
 		s.route(authLimited, "POST", "/register", "Register new user", s.handleRegister)
 		s.route(authLimited, "POST", "/login", "User login, returns JWT token", s.handleLogin)
+		s.route(api, "POST", "/reset-account", "Clear all users and reset system to allow re-registration", s.handleResetAccount)
 		// NOTE: reset-password requires authentication since we have no email verification.
 		// This prevents unauthenticated password reset attacks.
 
@@ -182,6 +186,8 @@ func (s *Server) setupRoutes() {
 		{
 			// Logout (add to blacklist)
 			s.route(protected, "POST", "/logout", "Logout (blacklist token)", s.handleLogout)
+			s.route(protected, "POST", "/onboarding/beginner", "Prepare beginner claw402 wallet and default model", s.handleBeginnerOnboarding)
+			s.route(protected, "GET", "/onboarding/beginner/current", "Get current beginner claw402 wallet", s.handleCurrentBeginnerWallet)
 
 			// User account management
 			s.routeWithSchema(protected, "PUT", "/user/password", "Change current user password",
@@ -256,6 +262,10 @@ Defaults when custom fields empty: openai→api.openai.com/v1, deepseek→api.de
 				`Returns: [{"id":"<EXACT id — use this as exchange_id when creating/updating a trader>","exchange_type":"<e.g. okx, binance>","account_name":"<user label>","enabled":<bool>}]
 CRITICAL: Always use the "id" field for exchange_id. Do not use "exchange_type" as an id.`,
 				s.handleGetExchangeConfigs)
+			s.routeWithSchema(protected, "GET", "/exchanges/account-state", "Get connection and balance state for each exchange account",
+				`Returns: {"states":{"<exchange_id>":{"status":"ok|disabled|missing_credentials|invalid_credentials|permission_denied|unavailable","display_balance":"<string>","total_equity":<number>,"available_balance":<number>,"asset":"USDT|USDC","checked_at":"<RFC3339>","error_code":"<string>","error_message":"<string>"}}}
+Use this endpoint to show balance and health in the exchange list without depending on traders.`,
+				s.handleGetExchangeAccountStates)
 			s.routeWithSchema(protected, "POST", "/exchanges", "Create a new exchange account",
 				`Body: {"exchange_type":"<string>","account_name":"<string, user label>","enabled":true,"api_key":"<string>","secret_key":"<string>","passphrase":"<string, required for okx/gate/kucoin>"}
 exchange_type values: "binance","bybit","okx","bitget","gate","kucoin","indodax" (CEX) | "hyperliquid","aster","lighter" (DEX)

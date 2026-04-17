@@ -4,10 +4,23 @@ import type {
   CreateTraderRequest,
 } from '../../types'
 import { API_BASE, httpClient } from './helpers'
+import { ApiError } from '../httpClient'
+
+function throwApiError(
+  message: string,
+  errorKey?: string,
+  errorParams?: Record<string, string>,
+  statusCode?: number
+): never {
+  throw new ApiError(message, errorKey, errorParams, statusCode)
+}
 
 export const traderApi = {
-  async getTraders(): Promise<TraderInfo[]> {
-    const result = await httpClient.get<TraderInfo[]>(`${API_BASE}/my-traders`)
+  async getTraders(silent?: boolean): Promise<TraderInfo[]> {
+    const result = await httpClient.request<TraderInfo[]>(
+      `${API_BASE}/my-traders`,
+      { silent }
+    )
     if (!result.success) throw new Error('Failed to fetch trader list')
     return Array.isArray(result.data) ? result.data : []
   },
@@ -23,7 +36,14 @@ export const traderApi = {
       `${API_BASE}/traders`,
       request
     )
-    if (!result.success) throw new Error('Failed to create trader')
+    if (!result.success) {
+      throwApiError(
+        result.message || 'Failed to create trader',
+        result.errorKey,
+        result.errorParams,
+        result.statusCode
+      )
+    }
     return result.data!
   },
 
@@ -36,7 +56,14 @@ export const traderApi = {
     const result = await httpClient.post(
       `${API_BASE}/traders/${traderId}/start`
     )
-    if (!result.success) throw new Error('Failed to start trader')
+    if (!result.success) {
+      throwApiError(
+        result.message || 'Failed to start trader',
+        result.errorKey,
+        result.errorParams,
+        result.statusCode
+      )
+    }
   },
 
   async stopTrader(traderId: string): Promise<void> {
@@ -88,7 +115,14 @@ export const traderApi = {
       `${API_BASE}/traders/${traderId}`,
       request
     )
-    if (!result.success) throw new Error('Failed to update trader')
+    if (!result.success) {
+      throwApiError(
+        result.message || 'Failed to update trader',
+        result.errorKey,
+        result.errorParams,
+        result.statusCode
+      )
+    }
     return result.data!
   },
 }
