@@ -571,6 +571,10 @@ func SignX402Payment(privateKey *ecdsa.PrivateKey, senderAddr string, opt X402Ac
 	network := opt.Network
 	asset := opt.Asset
 	extra := opt.Extra
+	scheme := opt.Scheme
+	if scheme == "" {
+		scheme = "exact"
+	}
 	maxTimeout := opt.MaxTimeoutSeconds
 	if maxTimeout == 0 {
 		maxTimeout = 300
@@ -645,7 +649,7 @@ func SignX402Payment(privateKey *ecdsa.PrivateKey, senderAddr string, opt X402Ac
 			"mimeType":    resourceMime,
 		},
 		"accepted": map[string]interface{}{
-			"scheme":            "exact",
+			"scheme":            scheme,
 			"network":           network,
 			"amount":            amount,
 			"asset":             asset,
