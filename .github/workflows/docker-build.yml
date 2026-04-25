@@ -1,5 +1,5 @@
 # Docker Hub only (docker.io). Set repository Variables (Settings → Variables):
-#   DOCKERHUB_IMAGE_PREFIX — optional. Namespace/org on Docker Hub, e.g. myuser or myorg. If empty, uses DOCKERHUB_USERNAME secret.
+#   DOCKERHUB_IMAGE_PREFIX — optional. Namespace on Docker Hub, e.g. myuser or myorg. If empty, uses DOCKERHUB_USERNAME secret; if that is empty (e.g. fork PR), falls back to lowercase github.repository_owner.
 #   DOCKER_IMAGE_TAG       — optional. If set, images are tagged only with this (plus -amd64/-arm64) and a multi-arch manifest with the same name. If empty, uses branch/semver/sha like the original workflow (main → latest, release/stable → stable).
 # Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN (for login and as default image prefix when DOCKERHUB_IMAGE_PREFIX is unset)
 
@@ -46,9 +46,15 @@ jobs:
             P="$S"
           fi
           if [ -z "$P" ]; then
-            P=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+            # Docker Hub is namespace/image — use owner only, not owner/repo (avoids invalid triple path)
+            P=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           fi
-          echo "image_prefix=$P" >> $GITHUB_OUTPUT
+          # Delimiter form: safe if value contains = or /
+          {
+            echo "image_prefix<<EOF_IMAGE_PREFIX"
+            printf '%s\n' "$P"
+            echo "EOF_IMAGE_PREFIX"
+          } >> "$GITHUB_OUTPUT"
           echo "image_prefix: $P"
 
       - name: Expose DOCKER_IMAGE_TAG
