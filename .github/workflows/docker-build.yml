@@ -1,7 +1,8 @@
 # Docker Hub only (docker.io). Repository Variables (optional):
-#   DOCKERHUB_IMAGE_PREFIX — Docker Hub namespace if different from secret username; usually leave unset (uses DOCKERHUB_USERNAME in-job; not passed as job output because GitHub strips outputs that match secrets).
-#   DOCKER_IMAGE_TAG       — If set, only that tag (+ per-arch) and one multi-arch manifest; if empty, branch/semver/sha (main → latest, release/stable → stable).
+#   DOCKERHUB_IMAGE_PREFIX — Docker Hub namespace if different from secret username; usually leave unset.
 # Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
+#
+# 固定 tag：改下面 env 里的 DOCKER_IMAGE_TAG_FIXED。非空则只推该 tag（+amd64/arm64）及对应 multi-arch；留空 '' 则按分支/semver 自动打标（main→latest 等）。
 
 name: Build and Push Docker Images
 
@@ -18,6 +19,9 @@ on:
       - main
       - dev
   workflow_dispatch:
+
+env:
+  DOCKER_IMAGE_TAG_FIXED: '20260425'
 
 jobs:
   prepare:
@@ -36,16 +40,15 @@ jobs:
             echo "has_dockerhub=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Expose DOCKER_IMAGE_TAG
+      - name: Apply fixed image tag from workflow env
         id: tag
         run: |
-          T='${{ vars.DOCKER_IMAGE_TAG }}'
-          if [ -n "$T" ]; then
-            echo "manual_tag=$T" >> $GITHUB_OUTPUT
-            echo "tag mode: manual ($T)"
+          if [ -n "${{ env.DOCKER_IMAGE_TAG_FIXED }}" ]; then
+            echo "manual_tag=${{ env.DOCKER_IMAGE_TAG_FIXED }}" >> "$GITHUB_OUTPUT"
+            echo "tag mode: manual (DOCKER_IMAGE_TAG_FIXED=${{ env.DOCKER_IMAGE_TAG_FIXED }})"
           else
-            echo "manual_tag=" >> $GITHUB_OUTPUT
-            echo "tag mode: auto (ref/semver)"
+            echo "manual_tag=" >> "$GITHUB_OUTPUT"
+            echo "tag mode: auto (branch/semver/sha)"
           fi
 
   build-and-push:
@@ -210,7 +213,7 @@ jobs:
             "${IMAGE}:${REF_NAME}-arm64"
 
           if [[ -n "$MANUAL" ]]; then
-            echo "✅ Manual DOCKER_IMAGE_TAG: single manifest only."
+            echo "✅ Manual tag (DOCKER_IMAGE_TAG_FIXED): single manifest only."
             echo "🎉 Done"
             exit 0
           fi
