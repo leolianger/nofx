@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
 
 env:
-  DOCKER_IMAGE_TAG_FIXED: '20260425'
+  DOCKER_IMAGE_TAG_FIXED: '20260506'
 
 jobs:
   prepare:
