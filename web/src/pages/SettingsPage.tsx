@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   User,
@@ -15,12 +14,6 @@ import {
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 import { api } from '../lib/api'
-import {
-  getPostAuthPath,
-  getUserMode,
-  setUserMode,
-  type UserMode,
-} from '../lib/onboarding'
 import { ExchangeConfigModal } from '../components/trader/ExchangeConfigModal'
 import { TelegramConfigModal } from '../components/trader/TelegramConfigModal'
 import { ModelConfigModal } from '../components/trader/ModelConfigModal'
@@ -28,14 +21,24 @@ import type { Exchange, AIModel } from '../types'
 
 type Tab = 'account' | 'models' | 'exchanges' | 'telegram'
 
+function configBadge(label: string, active: boolean) {
+  return (
+    <span
+      className={`text-[11px] px-2 py-0.5 rounded-full ${
+        active
+          ? 'bg-emerald-500/10 text-emerald-300'
+          : 'bg-zinc-800 text-zinc-500'
+      }`}
+    >
+      {label}
+    </span>
+  )
+}
+
 export function SettingsPage() {
   const { user } = useAuth()
   const { language } = useLanguage()
-  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<Tab>('account')
-  const [userMode, setUserModeState] = useState<UserMode>(
-    () => getUserMode() ?? 'advanced'
-  )
 
   // Account state
   const [newPassword, setNewPassword] = useState('')
@@ -56,23 +59,40 @@ export function SettingsPage() {
   // Telegram state
   const [showTelegramModal, setShowTelegramModal] = useState(false)
 
+  const refreshModelConfigs = async () => {
+    const [configs, supported] = await Promise.all([
+      api.getModelConfigs(),
+      api.getSupportedModels(),
+    ])
+    setConfiguredModels(configs)
+    setSupportedModels(supported)
+  }
+
+  const refreshExchangeConfigs = async () => {
+    const refreshed = await api.getExchangeConfigs()
+    setExchanges(refreshed)
+  }
+
   // Fetch data when tabs are visited
   useEffect(() => {
     if (activeTab === 'models') {
-      Promise.all([api.getModelConfigs(), api.getSupportedModels()])
-        .then(([configs, supported]) => {
-          setConfiguredModels(configs)
-          setSupportedModels(supported)
-        })
+      refreshModelConfigs()
         .catch(() => toast.error('Failed to load AI models'))
     }
     if (activeTab === 'exchanges') {
-      api
-        .getExchangeConfigs()
-        .then(setExchanges)
+      refreshExchangeConfigs()
         .catch(() => toast.error('Failed to load exchanges'))
     }
   }, [activeTab])
+
+  useEffect(() => {
+    const handleRefresh = () => {
+      refreshModelConfigs().catch(() => {})
+      refreshExchangeConfigs().catch(() => {})
+    }
+    window.addEventListener('agent-config-refresh', handleRefresh)
+    return () => window.removeEventListener('agent-config-refresh', handleRefresh)
+  }, [])
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -86,7 +106,7 @@ export function SettingsPage() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+          Authorization: `Bearer ${localStorage.getItem('auth_token') || ''}`,
         },
         body: JSON.stringify({ new_password: newPassword }),
       })
@@ -103,25 +123,6 @@ export function SettingsPage() {
     } finally {
       setChangingPassword(false)
     }
-  }
-
-  const handleSwitchMode = (nextMode: UserMode) => {
-    if (nextMode === userMode) {
-      return
-    }
-
-    setUserMode(nextMode)
-    setUserModeState(nextMode)
-    toast.success(
-      language === 'zh'
-        ? `已切换到${nextMode === 'beginner' ? '新手模式' : '老手模式'}`
-        : nextMode === 'beginner'
-          ? 'Switched to beginner mode'
-          : 'Switched to advanced mode'
-    )
-
-    const nextPath = getPostAuthPath(nextMode)
-    navigate(nextPath)
   }
 
   const handleSaveModel = async (
@@ -180,8 +181,7 @@ export function SettingsPage() {
       }
       await api.updateModelConfigs(request)
       toast.success('Model config saved')
-      const refreshed = await api.getModelConfigs()
-      setConfiguredModels(refreshed)
+      await refreshModelConfigs()
       setShowModelModal(false)
       setEditingModel(null)
     } catch {
@@ -216,8 +216,7 @@ export function SettingsPage() {
         ),
       }
       await api.updateModelConfigs(request)
-      const refreshed = await api.getModelConfigs()
-      setConfiguredModels(refreshed)
+      await refreshModelConfigs()
       setShowModelModal(false)
       setEditingModel(null)
       toast.success('Model config removed')
@@ -287,8 +286,7 @@ export function SettingsPage() {
         await api.createExchangeEncrypted(createRequest)
         toast.success('Exchange account created')
       }
-      const refreshed = await api.getExchangeConfigs()
-      setExchanges(refreshed)
+      await refreshExchangeConfigs()
       setShowExchangeModal(false)
       setEditingExchange(null)
     } catch {
@@ -300,8 +298,7 @@ export function SettingsPage() {
     try {
       await api.deleteExchange(exchangeId)
       toast.success('Exchange account deleted')
-      const refreshed = await api.getExchangeConfigs()
-      setExchanges(refreshed)
+      await refreshExchangeConfigs()
       setShowExchangeModal(false)
       setEditingExchange(null)
     } catch {
@@ -354,73 +351,7 @@ export function SettingsPage() {
               </div>
 
               <div className="border-t border-zinc-800 pt-6">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">
-                      {language === 'zh' ? '使用模式' : 'Usage Mode'}
-                    </h3>
-                    <p className="mt-1 text-xs text-zinc-500">
-                      {language === 'zh'
-                        ? '新手模式会显示钱包引导和 4 步卡片；老手模式保持原来的专业界面。'
-                        : 'Beginner mode shows wallet onboarding and quickstart cards. Advanced mode keeps the original pro workflow.'}
-                    </p>
-                  </div>
-                  <span className="rounded-full border border-nofx-gold/20 bg-nofx-gold/10 px-3 py-1 text-xs font-semibold text-nofx-gold">
-                    {userMode === 'beginner'
-                      ? language === 'zh'
-                        ? '当前：新手模式'
-                        : 'Current: Beginner'
-                      : language === 'zh'
-                        ? '当前：老手模式'
-                        : 'Current: Advanced'}
-                  </span>
-                </div>
-
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => handleSwitchMode('beginner')}
-                    className={`rounded-2xl border px-4 py-4 text-left transition-all ${
-                      userMode === 'beginner'
-                        ? 'border-nofx-gold bg-nofx-gold/10'
-                        : 'border-zinc-800 bg-zinc-950/70 hover:border-zinc-700'
-                    }`}
-                  >
-                    <div className="text-sm font-semibold text-white">
-                      {language === 'zh' ? '新手模式' : 'Beginner Mode'}
-                    </div>
-                    <div className="mt-1 text-xs text-zinc-500">
-                      {language === 'zh'
-                        ? '更简单，优先显示钱包、充值和快速上手引导。'
-                        : 'Simpler flow with wallet, funding, and quickstart guidance first.'}
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleSwitchMode('advanced')}
-                    className={`rounded-2xl border px-4 py-4 text-left transition-all ${
-                      userMode === 'advanced'
-                        ? 'border-nofx-gold bg-nofx-gold/10'
-                        : 'border-zinc-800 bg-zinc-950/70 hover:border-zinc-700'
-                    }`}
-                  >
-                    <div className="text-sm font-semibold text-white">
-                      {language === 'zh' ? '老手模式' : 'Advanced Mode'}
-                    </div>
-                    <div className="mt-1 text-xs text-zinc-500">
-                      {language === 'zh'
-                        ? '保持原来的配置与交易流程，不展示新手引导。'
-                        : 'Keeps the original configuration and trading workflow without beginner hints.'}
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              <div className="border-t border-zinc-800 pt-6">
-                <h3 className="text-sm font-semibold text-white mb-4">
-                  Change Password
-                </h3>
+                <h3 className="text-sm font-semibold text-white mb-4">Change Password</h3>
                 <form onSubmit={handleChangePassword} className="space-y-4">
                   <div>
                     <label className="block text-xs font-medium text-zinc-400 mb-2">
@@ -500,12 +431,13 @@ export function SettingsPage() {
                           <Cpu size={14} className="text-zinc-300" />
                         </div>
                         <div className="text-left">
-                          <p className="text-sm font-medium text-white">
-                            {model.name}
-                          </p>
-                          <p className="text-xs text-zinc-500">
-                            {model.provider}
-                          </p>
+                          <p className="text-sm font-medium text-white">{model.name}</p>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                            <p className="text-xs text-zinc-500">{model.provider}</p>
+                            {configBadge('API Key', !!model.has_api_key)}
+                            {model.customModelName ? configBadge('Custom Model', true) : null}
+                            {model.customApiUrl ? configBadge('Base URL', true) : null}
+                          </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -566,12 +498,16 @@ export function SettingsPage() {
                           <Building2 size={14} className="text-zinc-300" />
                         </div>
                         <div className="text-left">
-                          <p className="text-sm font-medium text-white">
-                            {exchange.account_name || exchange.name}
-                          </p>
-                          <p className="text-xs text-zinc-500 capitalize">
-                            {exchange.exchange_type || exchange.type}
-                          </p>
+                          <p className="text-sm font-medium text-white">{exchange.account_name || exchange.name}</p>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                            <p className="text-xs text-zinc-500 capitalize">{exchange.exchange_type || exchange.type}</p>
+                            {configBadge('API Key', !!exchange.has_api_key)}
+                            {configBadge('Secret', !!exchange.has_secret_key)}
+                            {exchange.has_passphrase ? configBadge('Passphrase', true) : null}
+                            {exchange.hyperliquidWalletAddr ? configBadge('Wallet', true) : null}
+                            {exchange.has_aster_private_key ? configBadge('Aster Key', true) : null}
+                            {exchange.has_lighter_private_key || exchange.has_lighter_api_key_private_key ? configBadge('Lighter Key', true) : null}
+                          </div>
                         </div>
                       </div>
                       <ChevronRight
